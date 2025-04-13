@@ -258,6 +258,25 @@ The MCP server now supports the following methods for direct invocation by LLMs:
   }
   ```
 
+### 7. Update Chapter Summary
+- **Method**: `update_chapter_summary`
+- **Description**: Allows authorized LLMs to update the summary of a specific chapter.
+- **Parameters**:
+  ```json
+  {
+    "auth_token": "<authentication_token>",
+    "chapter_id": "<chapter_id>",
+    "summary": "<new_summary>"
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "content": "Chapter summary updated successfully",
+    "metadata": null
+  }
+  ```
+
 ### Example JSON-RPC Request
 ```json
 {
