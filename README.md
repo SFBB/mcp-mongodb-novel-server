@@ -192,6 +192,99 @@ Check each scraper's documentation for specific usage instructions.
 - "Find all Q&A related to magic systems"
 - "Summarize the novel's plot"
 
+## Updated MCP Methods
+
+The MCP server now supports the following methods for direct invocation by LLMs:
+
+### 1. Query Character Information
+- **Method**: `query_character`
+- **Description**: Retrieve detailed information about a character.
+- **Parameters**:
+  ```json
+  {
+    "character_id": "<character_id>"
+  }
+  ```
+
+### 2. Query Novel Information
+- **Method**: `query_novel`
+- **Description**: Retrieve metadata about a novel.
+- **Parameters**:
+  ```json
+  {
+    "novel_id": "<novel_id>"
+  }
+  ```
+
+### 3. Query Specific Chapter Information
+- **Method**: `query_chapter`
+- **Description**: Retrieve information about a specific chapter by number, title, or ID.
+- **Parameters**:
+  ```json
+  {
+    "chapter_id": "<chapter_id>",
+    "chapter_number": <chapter_number>,
+    "chapter_title": "<chapter_title>"
+  }
+  ```
+
+### 4. Query Q&A Information Using Regex
+- **Method**: `query_qa_regex`
+- **Description**: Retrieve a list of Q&A entries matching a regex pattern.
+- **Parameters**:
+  ```json
+  {
+    "regex_pattern": "<regex_pattern>"
+  }
+  ```
+
+### 5. Query Chapter List Using Regex
+- **Method**: `query_chapter_regex`
+- **Description**: Retrieve a list of chapters matching a regex pattern.
+- **Parameters**:
+  ```json
+  {
+    "regex_pattern": "<regex_pattern>"
+  }
+  ```
+
+### 6. Query Character List Using Regex
+- **Method**: `query_character_regex`
+- **Description**: Retrieve a list of characters matching a regex pattern.
+- **Parameters**:
+  ```json
+  {
+    "regex_pattern": "<regex_pattern>"
+  }
+  ```
+
+### Example JSON-RPC Request
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "query_character",
+  "params": {
+    "character_id": "12345"
+  }
+}
+```
+
+### Example JSON-RPC Response
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": "Character details...",
+    "metadata": {
+      "token_count": 50,
+      "query_time_ms": 10
+    }
+  }
+}
+```
+
 ## Development
 
 ### Updating the Scraper Library

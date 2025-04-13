@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use crate::mcp::{MCPError, MCPParams, MCPRequest, MCPResponse, MCPResult};
 use crate::models::SearchParams;
@@ -33,6 +34,12 @@ pub async fn mcp_handler<T: DatabaseService>(
         "query" => handle_query(&state.db_service, request.params).await,
         "get_chapter_content" => handle_chapter_content(&state.db_service, request.params).await,
         "get_character_details" => handle_character_details(&state.db_service, request.params).await,
+        "query_qa_regex" => handle_qa_regex_query(&state.db_service, request.params).await,
+        "query_chapter_regex" => handle_chapter_regex_query(&state.db_service, request.params).await,
+        "query_character_regex" => handle_character_regex_query(&state.db_service, request.params).await,
+        "mcp.capabilities" => handle_capabilities().await,
+        "mcp.prompts" => handle_prompts().await,
+        "update_chapter_summary" => handle_update_chapter_summary(&state.db_service, request.params).await,
         _ => Err(MCPErrorResponse {
             code: -32601,
             message: format!("Method '{}' not found", request.method),
@@ -124,6 +131,162 @@ async fn handle_character_details<T: DatabaseService>(
         content: format!("Character details for query: {}", params.query),
         metadata: None,
     })
+}
+
+// Handle regex-based Q&A queries
+async fn handle_qa_regex_query<T: DatabaseService>(
+    db_service: &T,
+    params: MCPParams,
+) -> Result<MCPResult, MCPErrorResponse> {
+    let regex_pattern = params.query;
+    let qa_entries = db_service.search_qa_by_regex(&regex_pattern).await?;
+    let content = format_qa(&qa_entries);
+
+    Ok(MCPResult {
+        content,
+        metadata: None,
+    })
+}
+
+// Handle regex-based chapter queries
+async fn handle_chapter_regex_query<T: DatabaseService>(
+    db_service: &T,
+    params: MCPParams,
+) -> Result<MCPResult, MCPErrorResponse> {
+    let regex_pattern = params.query;
+    let chapters = db_service.search_chapters_by_regex(&regex_pattern).await?;
+    let content = format_chapters(&chapters);
+
+    Ok(MCPResult {
+        content,
+        metadata: None,
+    })
+}
+
+// Handle regex-based character queries
+async fn handle_character_regex_query<T: DatabaseService>(
+    db_service: &T,
+    params: MCPParams,
+) -> Result<MCPResult, MCPErrorResponse> {
+    let regex_pattern = params.query;
+    let characters = db_service.search_characters_by_regex(&regex_pattern).await?;
+    let content = format_characters(&characters);
+
+    Ok(MCPResult {
+        content,
+        metadata: None,
+    })
+}
+
+// Handle the mcp.capabilities request
+async fn handle_capabilities<T: DatabaseService>() -> Result<MCPResult, MCPErrorResponse> {
+    let capabilities = serde_json::json!({
+        "methods": [
+            {
+                "method": "query_character",
+                "description": "Retrieve detailed information about a character.",
+                "parameters": { "character_id": "string" }
+            },
+            {
+                "method": "query_novel",
+                "description": "Retrieve metadata about a novel.",
+                "parameters": { "novel_id": "string" }
+            },
+            {
+                "method": "query_chapter",
+                "description": "Retrieve information about a specific chapter by number, title, or ID.",
+                "parameters": { "chapter_id": "string", "chapter_number": "integer", "chapter_title": "string" }
+            },
+            {
+                "method": "query_qa_regex",
+                "description": "Retrieve a list of Q&A entries matching a regex pattern.",
+                "parameters": { "regex_pattern": "string" }
+            },
+            {
+                "method": "query_chapter_regex",
+                "description": "Retrieve a list of chapters matching a regex pattern.",
+                "parameters": { "regex_pattern": "string" }
+            },
+            {
+                "method": "query_character_regex",
+                "description": "Retrieve a list of characters matching a regex pattern.",
+                "parameters": { "regex_pattern": "string" }
+            }
+        ]
+    });
+
+    Ok(MCPResult {
+        content: capabilities.to_string(),
+        metadata: None,
+    })
+}
+
+// Handle the mcp.prompts request
+async fn handle_prompts<T: DatabaseService>() -> Result<MCPResult, MCPErrorResponse> {
+    let prompts = serde_json::json!({
+        "prompts": [
+            "What happens in chapter 3 of the novel?",
+            "Tell me about the protagonist character.",
+            "Find all Q&A related to magic systems.",
+            "Summarize the novel's plot.",
+            "List all chapters with titles containing 'magic'.",
+            "Retrieve character details for 'John Doe'."
+        ]
+    });
+
+    Ok(MCPResult {
+        content: prompts.to_string(),
+        metadata: None,
+    })
+}
+
+// Add write-access methods for updating summaries and cross-references
+async fn handle_update_chapter_summary<T: DatabaseService>(
+    db_service: &T,
+    params: MCPParams,
+) -> Result<MCPResult, MCPErrorResponse> {
+    // Validate authentication token
+    if !validate_auth_token(&params.options) {
+        return Err(MCPErrorResponse {
+            code: -32604, // Unauthorized
+            message: "Invalid or missing authentication token".to_string(),
+        });
+    }
+
+    // Extract chapter ID and new summary from params
+    let chapter_id = params.options.get("chapter_id").and_then(|v| v.as_str());
+    let new_summary = params.options.get("summary").and_then(|v| v.as_str());
+
+    if chapter_id.is_none() || new_summary.is_none() {
+        return Err(MCPErrorResponse {
+            code: -32602, // Invalid params
+            message: "Missing chapter_id or summary in request".to_string(),
+        });
+    }
+
+    // Update the chapter summary in the database
+    db_service
+        .update_chapter_summary(chapter_id.unwrap(), new_summary.unwrap())
+        .await
+        .map_err(|e| MCPErrorResponse {
+            code: -32603, // Internal error
+            message: format!("Failed to update chapter summary: {}", e),
+        })?;
+
+    Ok(MCPResult {
+        content: "Chapter summary updated successfully".to_string(),
+        metadata: None,
+    })
+}
+
+// Helper function to validate authentication tokens
+fn validate_auth_token(options: &HashMap<String, serde_json::Value>) -> bool {
+    if let Some(token) = options.get("auth_token").and_then(|v| v.as_str()) {
+        // Replace with actual token validation logic
+        token == "trusted_llm_token"
+    } else {
+        false
+    }
 }
 
 // Format the database result into a more LLM-friendly text format

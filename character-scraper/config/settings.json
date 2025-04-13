@@ -1,0 +1,17 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 27017,
+    "username": "your_username",
+    "password": "your_password",
+    "database_name": "character_db"
+  },
+  "scraping": {
+    "target_url": "https://example.com/characters",
+    "scraping_interval": 3600
+  },
+  "logging": {
+    "log_level": "INFO",
+    "log_file": "scraper.log"
+  }
+}
