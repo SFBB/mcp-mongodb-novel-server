@@ -1,0 +1,3 @@
+[submodule "scraper_library"]
+	path = scraper_library
+	url = https://github.com/SFBB/scraper_library
