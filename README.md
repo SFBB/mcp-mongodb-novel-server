@@ -45,18 +45,69 @@ The server uses the following optimized data models:
 - Rust (latest stable version)
 - MongoDB instance with your domain data
 - Python 3.7+ (for scrapers)
+- Git (for cloning and working with the repository)
+
+### Repository Structure
+
+The project is organized as follows:
+
+```
+mcp_database/
+├── src/              # Rust source code for the MCP server
+│   ├── db/           # Database connection and operations
+│   ├── handlers/     # HTTP request handlers 
+│   ├── mcp/          # MCP protocol implementation
+│   ├── models/       # Data models and structures
+│   ├── services/     # Business logic implementations
+│   └── utils/        # Utility functions
+├── docs/             # Documentation
+│   └── database_interface.md  # Detailed API and schema docs
+└── scraper_library/  # Python scrapers for data collection (submodule)
+    └── src/          # Scraper source code for various sites
+```
+
+### Git Repository
+
+The project is hosted on GitHub. To contribute or use:
+
+1. **Clone the Repository**:
+   ```bash
+   # Clone with submodules (recommended)
+   git clone --recursive https://github.com/SFBB/mcp-mongodb-novel-server.git
+   
+   # Or clone normally and then initialize submodules
+   git clone https://github.com/SFBB/mcp-mongodb-novel-server.git
+   cd mcp-mongodb-novel-server
+   git submodule update --init --recursive
+   ```
+
+2. **Stay Updated**:
+   ```bash
+   # Pull latest changes including submodule updates
+   git pull --recurse-submodules
+   
+   # Update only submodules to their latest versions
+   git submodule update --remote
+   ```
+
+3. **Contributing**:
+   ```bash
+   # Create a new branch for your feature
+   git checkout -b feature/your-feature-name
+   
+   # Make changes, then commit
+   git add .
+   git commit -m "Add feature: description of your changes"
+   
+   # Push your branch
+   git push -u origin feature/your-feature-name
+   
+   # Then create a Pull Request on GitHub
+   ```
 
 ### Installation
 
-1. Clone this repository with submodules
-   ```
-   git clone --recursive https://github.com/YOUR-USERNAME/mcp-mongodb-server.git
-   ```
-   
-   If you've already cloned without `--recursive`, you can get the submodules with:
-   ```
-   git submodule update --init --recursive
-   ```
+1. Clone this repository with submodules as shown above
 
 2. Create a `.env` file with the following variables:
    ```
@@ -140,6 +191,53 @@ Check each scraper's documentation for specific usage instructions.
 - "Tell me about the protagonist character"
 - "Find all Q&A related to magic systems"
 - "Summarize the novel's plot"
+
+## Development
+
+### Updating the Scraper Library
+
+The scraper library is included as a Git submodule. To update it to the latest version:
+
+```bash
+# Navigate to the submodule directory
+cd scraper_library
+
+# Fetch the latest changes
+git fetch origin
+git checkout main
+git pull
+
+# Go back to the main project and commit the submodule update
+cd ..
+git add scraper_library
+git commit -m "Update scraper library to latest version"
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run specific tests
+cargo test db_service
+```
+
+### Code Style
+
+This project follows Rust's standard code style guidelines:
+
+```bash
+# Check code formatting
+cargo fmt -- --check
+
+# Run linting
+cargo clippy
+```
+
+## Versioning
+
+We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/SFBB/mcp-mongodb-novel-server/tags).
 
 ## License
 
