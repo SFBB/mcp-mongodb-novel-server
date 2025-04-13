@@ -5,6 +5,7 @@ use mongodb::{
     options::FindOptions,
 };
 use std::time::{Duration, Instant};
+use futures::TryStreamExt; // Add the TryStreamExt trait
 
 use crate::db::DatabaseConnection;
 use crate::models::{Chapter, Character, MCPResponse, Novel, QA, ResponseMetadata, SearchParams};
@@ -15,6 +16,10 @@ pub trait DatabaseService {
     async fn search_chapters(&self, params: &SearchParams) -> Result<MCPResponse>;
     async fn search_characters(&self, params: &SearchParams) -> Result<MCPResponse>;
     async fn search_qa(&self, params: &SearchParams) -> Result<MCPResponse>;
+    async fn search_qa_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>>;
+    async fn search_chapters_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>>;
+    async fn search_characters_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>>;
+    async fn update_chapter_summary(&self, chapter_id: &str, new_summary: &str) -> Result<()>;
 }
 
 pub struct MongoDBService {
@@ -127,7 +132,7 @@ impl DatabaseService for MongoDBService {
         }
         
         let query_time = start.elapsed();
-        self.format_response(novels, query_time, has_more, Some(limit)).await
+        Ok(self.format_response(novels, query_time, has_more, Some(limit)).await)
     }
     
     async fn search_chapters(&self, params: &SearchParams) -> Result<MCPResponse> {
@@ -180,7 +185,7 @@ impl DatabaseService for MongoDBService {
         }
         
         let query_time = start.elapsed();
-        self.format_response(chapters, query_time, has_more, Some(limit)).await
+        Ok(self.format_response(chapters, query_time, has_more, Some(limit)).await)
     }
     
     async fn search_characters(&self, params: &SearchParams) -> Result<MCPResponse> {
@@ -227,7 +232,7 @@ impl DatabaseService for MongoDBService {
         }
         
         let query_time = start.elapsed();
-        self.format_response(characters, query_time, has_more, Some(limit)).await
+        Ok(self.format_response(characters, query_time, has_more, Some(limit)).await)
     }
     
     async fn search_qa(&self, params: &SearchParams) -> Result<MCPResponse> {
@@ -273,6 +278,103 @@ impl DatabaseService for MongoDBService {
         }
         
         let query_time = start.elapsed();
-        self.format_response(qa_entries, query_time, has_more, Some(limit)).await
+        Ok(self.format_response(qa_entries, query_time, has_more, Some(limit)).await)
+    }
+
+    async fn search_qa_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>> {
+        // Build regex filter
+        let filter = doc! {
+            "$or": [
+                { "question": { "$regex": regex_pattern, "$options": "i" } },
+                { "answer": { "$regex": regex_pattern, "$options": "i" } }
+            ]
+        };
+        
+        // Execute query
+        let collection = self.db.get_collection::<QA>("qa");
+        let cursor = collection.find(filter, None).await?;
+        let qa_entries: Vec<QA> = cursor.try_collect().await?;
+        
+        // Convert to serde_json::Value
+        let json_entries = serde_json::to_value(qa_entries)?;
+        if let serde_json::Value::Array(entries) = json_entries {
+            Ok(entries)
+        } else {
+            Ok(vec![])
+        }
+    }
+    
+    async fn search_chapters_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>> {
+        // Build regex filter
+        let filter = doc! {
+            "$or": [
+                { "title": { "$regex": regex_pattern, "$options": "i" } },
+                { "summary": { "$regex": regex_pattern, "$options": "i" } },
+                { "key_points": { "$regex": regex_pattern, "$options": "i" } }
+            ]
+        };
+        
+        // Execute query with projection to exclude content for token efficiency
+        let options = FindOptions::builder()
+            .projection(doc! { "content": 0 })
+            .build();
+            
+        let collection = self.db.get_collection::<Chapter>("chapters");
+        let cursor = collection.find(filter, options).await?;
+        let chapters: Vec<Chapter> = cursor.try_collect().await?;
+        
+        // Convert to serde_json::Value
+        let json_entries = serde_json::to_value(chapters)?;
+        if let serde_json::Value::Array(entries) = json_entries {
+            Ok(entries)
+        } else {
+            Ok(vec![])
+        }
+    }
+    
+    async fn search_characters_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>> {
+        // Build regex filter
+        let filter = doc! {
+            "$or": [
+                { "name": { "$regex": regex_pattern, "$options": "i" } },
+                { "description": { "$regex": regex_pattern, "$options": "i" } },
+                { "key_traits": { "$regex": regex_pattern, "$options": "i" } }
+            ]
+        };
+        
+        // Execute query
+        let collection = self.db.get_collection::<Character>("characters");
+        let cursor = collection.find(filter, None).await?;
+        let characters: Vec<Character> = cursor.try_collect().await?;
+        
+        // Convert to serde_json::Value
+        let json_entries = serde_json::to_value(characters)?;
+        if let serde_json::Value::Array(entries) = json_entries {
+            Ok(entries)
+        } else {
+            Ok(vec![])
+        }
+    }
+    
+    async fn update_chapter_summary(&self, chapter_id: &str, new_summary: &str) -> Result<()> {
+        // Convert string ID to ObjectId
+        let object_id = ObjectId::parse_str(chapter_id)?;
+        
+        // Create update document
+        let update = doc! {
+            "$set": {
+                "summary": new_summary
+            }
+        };
+        
+        // Execute update
+        let collection = self.db.get_collection::<Chapter>("chapters");
+        let result = collection.update_one(doc! { "_id": object_id }, update, None).await?;
+        
+        if result.matched_count == 0 {
+            return Err(anyhow::anyhow!("Chapter not found"));
+        }
+        
+        Ok(())
     }
 }

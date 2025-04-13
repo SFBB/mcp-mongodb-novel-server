@@ -2,10 +2,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use dotenv::dotenv;
+use tokio::net::TcpListener; // Add this for proper server binding
 
 mod db;
 mod handlers;
@@ -14,8 +15,12 @@ mod models;
 mod services;
 mod utils;
 
-use handlers::{mcp_handler, ServerState, api_router};
-use services::{MongoDBService, NovelCrudService, ChapterCrudService, CharacterCrudService, QACrudService};
+use crate::db::DatabaseConnection;
+use crate::handlers::{api_router, mcp_handler, ServerState};
+use crate::services::{
+    crud_service::{ChapterCrudService, CharacterCrudService, NovelCrudService, QACrudService},
+    db_service::MongoDBService,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -72,9 +77,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("MCP endpoint available at http://{}:{}/mcp", addr.ip(), port);
     tracing::info!("CRUD API endpoints available at http://{}:{}/api/...", addr.ip(), port);
     
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await?;
+    // Create a TCP listener
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
     
     Ok(())
 }

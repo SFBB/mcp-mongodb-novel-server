@@ -6,6 +6,7 @@ use mongodb::{
 };
 use std::env;
 
+#[derive(Clone)]
 pub struct DatabaseConnection {
     client: Client,
     db: Database,

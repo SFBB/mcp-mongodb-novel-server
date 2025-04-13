@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::models::{Novel, Chapter, Character, QA};
 use crate::services::{NovelCrudService, ChapterCrudService, CharacterCrudService, QACrudService};
+use crate::services::crud_service::CrudService; // Import the CrudService trait
 
 // Novel CRUD handlers
 pub async fn get_novels(
@@ -262,26 +263,36 @@ pub fn api_router(
     character_service: Arc<CharacterCrudService>,
     qa_service: Arc<QACrudService>,
 ) -> Router {
-    Router::new()
-        // Novel routes
+    // Create separate routers for each service with their own state
+    let novel_router = Router::new()
         .route("/api/novels", get(get_novels))
         .route("/api/novels", post(create_novel))
         .route("/api/novels/:id", get(get_novel))
         .route("/api/novels/:id", patch(update_novel))
         .route("/api/novels/:id", delete(delete_novel))
-        // Chapter routes
+        .with_state(novel_service);
+        
+    let chapter_router = Router::new()
         .route("/api/chapters", get(get_chapters))
         .route("/api/chapters", post(create_chapter))
         .route("/api/novels/:id/chapters", get(get_novel_chapters))
-        // Character routes
+        .with_state(chapter_service);
+        
+    let character_router = Router::new()
         .route("/api/characters", get(get_characters))
         .route("/api/characters", post(create_character))
         .route("/api/novels/:id/characters", get(get_novel_characters))
-        // QA routes
+        .with_state(character_service);
+        
+    let qa_router = Router::new()
         .route("/api/qa", get(get_qa_entries))
         .route("/api/qa", post(create_qa))
-        .with_state(novel_service)
-        .with_state(chapter_service)
-        .with_state(character_service)
-        .with_state(qa_service)
+        .with_state(qa_service);
+    
+    // Merge all the routers
+    Router::new()
+        .merge(novel_router)
+        .merge(chapter_router)
+        .merge(character_router)
+        .merge(qa_router)
 }

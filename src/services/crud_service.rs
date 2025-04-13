@@ -4,6 +4,7 @@ use mongodb::{
     bson::{doc, oid::ObjectId, Document},
     options::{FindOneAndUpdateOptions, ReturnDocument},
 };
+use futures::TryStreamExt; // Add TryStreamExt trait
 
 use crate::db::DatabaseConnection;
 use crate::models::{Novel, Chapter, Character, QA};

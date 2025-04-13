@@ -91,17 +91,16 @@ async fn handle_query<T: DatabaseService>(
     // Format result for MCP protocol
     let content = format_content_for_llm(&db_result.data, &search_params);
     
+    let metadata_map: HashMap<String, serde_json::Value> = [
+        ("token_count".to_string(), serde_json::to_value(db_result.metadata.token_count).unwrap_or(serde_json::Value::Null)),
+        ("query_time_ms".to_string(), serde_json::to_value(db_result.metadata.query_time_ms).unwrap_or(serde_json::Value::Null)),
+        ("has_more".to_string(), serde_json::to_value(db_result.metadata.has_more).unwrap_or(serde_json::Value::Null)),
+        ("next_page_token".to_string(), serde_json::to_value(db_result.metadata.next_page_token).unwrap_or(serde_json::Value::Null)),
+    ].into_iter().collect();
+    
     Ok(MCPResult {
         content,
-        metadata: Some(serde_json::json!({
-            "token_count": db_result.metadata.token_count,
-            "query_time_ms": db_result.metadata.query_time_ms,
-            "has_more": db_result.metadata.has_more,
-            "next_page_token": db_result.metadata.next_page_token,
-        })
-        .as_object()
-        .cloned()
-        .unwrap_or_default()),
+        metadata: Some(metadata_map),
     })
 }
 
@@ -179,7 +178,7 @@ async fn handle_character_regex_query<T: DatabaseService>(
 }
 
 // Handle the mcp.capabilities request
-async fn handle_capabilities<T: DatabaseService>() -> Result<MCPResult, MCPErrorResponse> {
+async fn handle_capabilities() -> Result<MCPResult, MCPErrorResponse> {
     let capabilities = serde_json::json!({
         "methods": [
             {
@@ -222,7 +221,7 @@ async fn handle_capabilities<T: DatabaseService>() -> Result<MCPResult, MCPError
 }
 
 // Handle the mcp.prompts request
-async fn handle_prompts<T: DatabaseService>() -> Result<MCPResult, MCPErrorResponse> {
+async fn handle_prompts() -> Result<MCPResult, MCPErrorResponse> {
     let prompts = serde_json::json!({
         "prompts": [
             "What happens in chapter 3 of the novel?",
@@ -447,5 +446,15 @@ impl IntoResponse for MCPErrorResponse {
         });
         
         (status, body).into_response()
+    }
+}
+
+// Implement From<anyhow::Error> for MCPErrorResponse to enable the ? operator
+impl From<anyhow::Error> for MCPErrorResponse {
+    fn from(error: anyhow::Error) -> Self {
+        MCPErrorResponse {
+            code: -32603, // Internal error
+            message: format!("Internal error: {}", error),
+        }
     }
 }
