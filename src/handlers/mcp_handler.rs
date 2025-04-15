@@ -39,7 +39,14 @@ pub async fn mcp_handler<T: DatabaseService>(
         "query_character_regex" => handle_character_regex_query(&state.db_service, request.params).await,
         "mcp.capabilities" => handle_capabilities().await,
         "mcp.prompts" => handle_prompts().await,
+        // Conditionally expose write-access methods
+        #[cfg(feature = "mcp_write_access")]
         "update_chapter_summary" => handle_update_chapter_summary(&state.db_service, request.params).await,
+        #[cfg(not(feature = "mcp_write_access"))]
+        "update_chapter_summary" => Err(MCPErrorResponse {
+            code: -32601,
+            message: format!("Method '{}' not found", request.method),
+        }),
         _ => Err(MCPErrorResponse {
             code: -32601,
             message: format!("Method '{}' not found", request.method),
@@ -61,7 +68,11 @@ async fn handle_query<T: DatabaseService>(
     params: MCPParams,
 ) -> Result<MCPResult, MCPErrorResponse> {
     // Parse the natural language query into structured params
-    let search_params = QueryParser::parse_natural_language_query(&params.query);
+    let query = params.query.as_ref().ok_or(MCPErrorResponse {
+        code: -32602,
+        message: "Missing 'query' field in params".to_string(),
+    })?;
+    let search_params = QueryParser::parse_natural_language_query(query);
     
     // Execute the appropriate search based on collection type
     let db_response = match search_params.collection.as_str() {
@@ -113,7 +124,7 @@ async fn handle_chapter_content<T: DatabaseService>(
     // Implementation simplified for example purposes
     
     Ok(MCPResult {
-        content: format!("Chapter content for query: {}", params.query),
+        content: format!("Chapter content for query: {}", params.query.as_deref().unwrap_or("<none>")),
         metadata: None,
     })
 }
@@ -127,7 +138,7 @@ async fn handle_character_details<T: DatabaseService>(
     // Implementation simplified for example purposes
     
     Ok(MCPResult {
-        content: format!("Character details for query: {}", params.query),
+        content: format!("Character details for query: {}", params.query.as_deref().unwrap_or("<none>")),
         metadata: None,
     })
 }
@@ -137,8 +148,8 @@ async fn handle_qa_regex_query<T: DatabaseService>(
     db_service: &T,
     params: MCPParams,
 ) -> Result<MCPResult, MCPErrorResponse> {
-    let regex_pattern = params.query;
-    let qa_entries = db_service.search_qa_by_regex(&regex_pattern).await?;
+    let regex_pattern = params.query.as_deref().unwrap_or("");
+    let qa_entries = db_service.search_qa_by_regex(regex_pattern).await?;
     let content = format_qa(&qa_entries);
 
     Ok(MCPResult {
@@ -152,8 +163,8 @@ async fn handle_chapter_regex_query<T: DatabaseService>(
     db_service: &T,
     params: MCPParams,
 ) -> Result<MCPResult, MCPErrorResponse> {
-    let regex_pattern = params.query;
-    let chapters = db_service.search_chapters_by_regex(&regex_pattern).await?;
+    let regex_pattern = params.query.as_deref().unwrap_or("");
+    let chapters = db_service.search_chapters_by_regex(regex_pattern).await?;
     let content = format_chapters(&chapters);
 
     Ok(MCPResult {
@@ -167,8 +178,8 @@ async fn handle_character_regex_query<T: DatabaseService>(
     db_service: &T,
     params: MCPParams,
 ) -> Result<MCPResult, MCPErrorResponse> {
-    let regex_pattern = params.query;
-    let characters = db_service.search_characters_by_regex(&regex_pattern).await?;
+    let regex_pattern = params.query.as_deref().unwrap_or("");
+    let characters = db_service.search_characters_by_regex(regex_pattern).await?;
     let content = format_characters(&characters);
 
     Ok(MCPResult {
@@ -179,39 +190,52 @@ async fn handle_character_regex_query<T: DatabaseService>(
 
 // Handle the mcp.capabilities request
 async fn handle_capabilities() -> Result<MCPResult, MCPErrorResponse> {
+    let methods = vec![
+        serde_json::json!({
+            "method": "query_character",
+            "description": "Retrieve detailed information about a character.",
+            "parameters": { "character_id": "string" }
+        }),
+        serde_json::json!({
+            "method": "query_novel",
+            "description": "Retrieve metadata about a novel.",
+            "parameters": { "novel_id": "string" }
+        }),
+        serde_json::json!({
+            "method": "query_chapter",
+            "description": "Retrieve information about a specific chapter by number, title, or ID.",
+            "parameters": { "chapter_id": "string", "chapter_number": "integer", "chapter_title": "string" }
+        }),
+        serde_json::json!({
+            "method": "query_qa_regex",
+            "description": "Retrieve a list of Q&A entries matching a regex pattern.",
+            "parameters": { "regex_pattern": "string" }
+        }),
+        serde_json::json!({
+            "method": "query_chapter_regex",
+            "description": "Retrieve a list of chapters matching a regex pattern.",
+            "parameters": { "regex_pattern": "string" }
+        }),
+        serde_json::json!({
+            "method": "query_character_regex",
+            "description": "Retrieve a list of characters matching a regex pattern.",
+            "parameters": { "regex_pattern": "string" }
+        }),
+    ];
+    // Conditionally add write-access methods
+    #[cfg(feature = "mcp_write_access")]
+    let methods = {
+        let mut m = methods;
+        m.push(serde_json::json!({
+            "method": "update_chapter_summary",
+            "description": "Update the summary of a chapter (write access).",
+            "parameters": { "chapter_id": "string", "summary": "string", "auth_token": "string" }
+        }));
+        m
+    };
+
     let capabilities = serde_json::json!({
-        "methods": [
-            {
-                "method": "query_character",
-                "description": "Retrieve detailed information about a character.",
-                "parameters": { "character_id": "string" }
-            },
-            {
-                "method": "query_novel",
-                "description": "Retrieve metadata about a novel.",
-                "parameters": { "novel_id": "string" }
-            },
-            {
-                "method": "query_chapter",
-                "description": "Retrieve information about a specific chapter by number, title, or ID.",
-                "parameters": { "chapter_id": "string", "chapter_number": "integer", "chapter_title": "string" }
-            },
-            {
-                "method": "query_qa_regex",
-                "description": "Retrieve a list of Q&A entries matching a regex pattern.",
-                "parameters": { "regex_pattern": "string" }
-            },
-            {
-                "method": "query_chapter_regex",
-                "description": "Retrieve a list of chapters matching a regex pattern.",
-                "parameters": { "regex_pattern": "string" }
-            },
-            {
-                "method": "query_character_regex",
-                "description": "Retrieve a list of characters matching a regex pattern.",
-                "parameters": { "regex_pattern": "string" }
-            }
-        ]
+        "methods": methods
     });
 
     Ok(MCPResult {
@@ -328,7 +352,7 @@ fn format_novels(items: &[serde_json::Value]) -> String {
 fn format_chapters(items: &[serde_json::Value]) -> String {
     let mut result = format!("Found {} chapters:\n\n", items.len());
     
-    for (i, chapter) in items.iter().enumerate() {
+    for chapter in items.iter() {
         if let Some(title) = chapter.get("title").and_then(|t| t.as_str()) {
             let number = chapter.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
             let summary = chapter.get("summary").and_then(|s| s.as_str()).unwrap_or("No summary available");

@@ -26,10 +26,10 @@ impl DatabaseConnection {
         let client = Client::with_options(options)?;
         let db = client.database(&db_name);
 
-        // Test the connection
+        // Test the connection with a valid ping command
         client
             .database("admin")
-            .run_command(Document::new(), None)
+            .run_command(mongodb::bson::doc! { "ping": 1 }, None)
             .await?;
 
         tracing::info!("Connected to MongoDB");

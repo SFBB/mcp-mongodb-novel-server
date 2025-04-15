@@ -12,7 +12,7 @@ pub struct MCPRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MCPParams {
-    pub query: String,
+    pub query: Option<String>,
     #[serde(default)]
     pub context: Vec<MCPContext>,
     #[serde(default)]
