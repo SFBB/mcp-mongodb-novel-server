@@ -1,3 +1,3 @@
 #!/bin/bash
-# build: Build MCP server with write access enabled
-cargo build --release --features mcp_write_access
+# build: Build MCP server with write access disabled
+cargo build --release
