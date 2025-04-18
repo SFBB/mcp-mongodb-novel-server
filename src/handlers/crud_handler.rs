@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post, delete, patch},
     Router,
 };
-use mongodb::bson::{doc, oid::ObjectId, Document};
+use mongodb::bson::{doc, oid::ObjectId};
 use serde_json::{json, Value};
 use std::sync::Arc;
 

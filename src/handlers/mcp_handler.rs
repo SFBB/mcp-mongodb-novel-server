@@ -39,6 +39,25 @@ pub async fn mcp_handler<T: DatabaseService>(
         "query_character_regex" => handle_character_regex_query(&state.db_service, request.params).await,
         "mcp.capabilities" => handle_capabilities().await,
         "mcp.prompts" => handle_prompts().await,
+        "initialize" => handle_initialize(&request.params).await,
+        "notifications/initialized" => {
+            tracing::info!("Received notifications/initialized");
+            // Per JSON-RPC 2.0, notifications do not expect a response (no id field)
+            if request.id.is_none() {
+                // Just log and return early, do not send a response
+                return Err(MCPErrorResponse {
+                    code: -32000,
+                    message: "Notification received, no response sent".to_string(),
+                });
+            }
+            // If id is present (should not happen), return a no-op result for compatibility
+            return Ok(Json(MCPResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: None,
+                error: None,
+            }));
+        },
         // Conditionally expose write-access methods
         #[cfg(feature = "mcp_write_access")]
         "update_chapter_summary" => handle_update_chapter_summary(&state.db_service, request.params).await,
@@ -298,6 +317,28 @@ async fn handle_update_chapter_summary<T: DatabaseService>(
 
     Ok(MCPResult {
         content: "Chapter summary updated successfully".to_string(),
+        metadata: None,
+    })
+}
+
+// Handle the initialize request
+async fn handle_initialize(params: &MCPParams) -> Result<MCPResult, MCPErrorResponse> {
+    // Log initialization details
+    let protocol_version = params.options.get("protocolVersion").and_then(|v| v.as_str());
+    if let Some(version) = protocol_version {
+        tracing::info!("Initializing MCP server with protocol version: {}", version);
+    } else {
+        tracing::warn!("Initialize request missing protocolVersion field");
+    }
+        
+    // Handle capabilities registration if provided
+    if let Some(capabilities) = params.options.get("capabilities") {
+        tracing::debug!("Client capabilities: {}", capabilities);
+    }
+
+    // Return successful initialization response
+    Ok(MCPResult {
+        content: "{\"message\": \"MCP server initialized\"}".to_string(),
         metadata: None,
     })
 }

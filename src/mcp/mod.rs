@@ -1,3 +1,6 @@
-mod protocol;
+pub mod conversion;
+pub mod protocol;
+pub mod server;
 
-pub use protocol::{MCPRequest, MCPParams, MCPContext, MCPResponse, MCPResult, MCPError};
+// Re-export key components for easier imports
+pub use protocol::{MCPError, MCPParams, MCPRequest, MCPResponse, MCPResult};

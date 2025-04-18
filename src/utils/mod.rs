@@ -2,7 +2,6 @@ pub mod query_parser;
 pub use query_parser::QueryParser;
 
 use std::collections::HashMap;
-use crate::handlers::mcp_handler::MCPErrorResponse;
 
 /// Validates the provided authentication token.
 /// Returns true if the token is valid, false otherwise.
@@ -16,10 +15,10 @@ pub fn validate_auth_token(options: &HashMap<String, serde_json::Value>) -> bool
     }
 }
 
+/// Error code for unauthorized access
+pub const ERROR_UNAUTHORIZED: i32 = -32604;
+
 /// Generates an error message for unauthorized access.
-pub fn unauthorized_error() -> MCPErrorResponse {
-    MCPErrorResponse {
-        code: -32604, // Unauthorized
-        message: "Invalid or missing authentication token".to_string(),
-    }
+pub fn unauthorized_error_message() -> String {
+    "Invalid or missing authentication token".to_string()
 }

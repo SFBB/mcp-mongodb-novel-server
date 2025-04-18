@@ -1,6 +1,5 @@
 use anyhow::Result;
 use mongodb::{
-    bson::Document,
     options::{ClientOptions, ResolverConfig},
     Client, Collection, Database,
 };

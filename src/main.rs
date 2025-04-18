@@ -2,11 +2,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    routing::{get, post},
+    routing::post,
     Router,
 };
 use dotenv::dotenv;
-use tokio::net::TcpListener; // Add this for proper server binding
+use tokio::net::TcpListener;
 
 mod db;
 mod handlers;
@@ -15,8 +15,7 @@ mod models;
 mod services;
 mod utils;
 
-use crate::db::DatabaseConnection;
-use crate::handlers::{api_router, mcp_handler, ServerState};
+use crate::handlers::{api_router, rmcp_http_handler, run_stdio_mcp_server, ServerState};
 use crate::services::{
     crud_service::{ChapterCrudService, CharacterCrudService, NovelCrudService, QACrudService},
     db_service::MongoDBService,
@@ -30,6 +29,18 @@ async fn main() -> anyhow::Result<()> {
     // Initialize tracing for logs
     tracing_subscriber::fmt::init();
     
+    // Check if we should run in stdio mode
+    let stdio_mode = std::env::var("STDIO_MODE").unwrap_or_default() == "1";
+    
+    // Create database service for MCP
+    let db_service = MongoDBService::new().await?;
+    
+    if stdio_mode {
+        // Run in stdio mode for direct MCP communication
+        tracing::info!("Starting MCP server in stdio mode");
+        return run_stdio_mcp_server(db_service).await;
+    }
+    
     // Get port from environment or use default
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "3000".to_string())
@@ -38,9 +49,6 @@ async fn main() -> anyhow::Result<()> {
     
     // Create database connection
     let db_connection = db::DatabaseConnection::new().await?;
-    
-    // Create database service for MCP
-    let db_service = MongoDBService::new().await?;
     
     // Create CRUD services
     let novel_service = Arc::new(NovelCrudService::new(db_connection.clone()));
@@ -55,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     
     // Build MCP endpoint
     let mcp_app = Router::new()
-        .route("/mcp", post(mcp_handler::<MongoDBService>))
+        .route("/mcp", post(rmcp_http_handler::<MongoDBService>))
         .with_state(mcp_state);
     
     // Build CRUD API router

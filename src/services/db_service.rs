@@ -22,6 +22,7 @@ pub trait DatabaseService {
     async fn update_chapter_summary(&self, chapter_id: &str, new_summary: &str) -> Result<()>;
 }
 
+#[derive(Clone)]
 pub struct MongoDBService {
     db: DatabaseConnection,
 }
@@ -60,7 +61,7 @@ impl MongoDBService {
         data: Vec<T>, 
         query_time: Duration, 
         has_more: bool,
-        limit: Option<u32>
+        _limit: Option<u32>
     ) -> MCPResponse 
     where 
         T: serde::Serialize 
