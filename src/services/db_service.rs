@@ -315,7 +315,8 @@ impl DatabaseService for Arc<MongoDBService> {
             "$or": [
                 { "title": { "$regex": regex_pattern, "$options": "i" } },
                 { "summary": { "$regex": regex_pattern, "$options": "i" } },
-                { "key_points": { "$regex": regex_pattern, "$options": "i" } }
+                { "key_points": { "$regex": regex_pattern, "$options": "i" } },
+                { "content": { "$regex": regex_pattern, "$options": "i" } }
             ]
         };
         

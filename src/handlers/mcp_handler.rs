@@ -625,9 +625,11 @@ impl<T: DatabaseService + Clone + Send + Sync + 'static> ServerHandler for MpcHa
                 let result = self.db_service.get_chapter_content(chapter_id).await
                     .map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
                 
+                let is_error = result.is_none();
+
                 Ok(CallToolResult {
-                    content: vec![Content::from_raw(result.unwrap())],
-                    is_error: Some(false),
+                    content: vec![Content::from_raw(if !is_error { result.unwrap() } else { "Content not found!".to_string() })],
+                    is_error: Some(is_error),
                 })
             },
             "get_character_details" => {
