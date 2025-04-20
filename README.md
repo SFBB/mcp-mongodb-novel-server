@@ -1,338 +1,267 @@
 # MCP MongoDB Server
 
-A Model Context Protocol (MCP) server that provides an interface between LLMs and MongoDB databases, optimized for small context windows (3k tokens).
+A high-performance [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that provides an efficient knowledge interface between Large Language Models (LLMs) and MongoDB. Optimized for small context windows (3k tokens), this server enables LLMs to retrieve and interact with domain-specific knowledge stored in MongoDB collections.
 
-## Overview
+## 🚀 Features
 
-This server acts as an assistant for LLMs to get better knowledge of specific domains stored in MongoDB. The data structure and schema are optimized to allow efficient interaction with small context windows.
+- **Dual-Server Architecture**:
+  - SSE-based MCP server for efficient LLM communication
+  - RESTful CRUD API for database management
+  
+- **Token Efficiency**: Responses formatted for maximum information density within small context windows
 
-Example use cases:
-- Querying novel chapter information
-- Getting character details 
-- Accessing author Q&A
-- Retrieving domain-specific knowledge
+- **MongoDB Integration**: Works with existing MongoDB collections with optimized query mechanisms
 
-## Features
+- **Data Models** for multiple domain-specific entities:
+  - Novels
+  - Chapters
+  - Characters
+  - Q&A Knowledge Base
 
-- **MCP Protocol Implementation**: Follows the Model Context Protocol specification
-- **Natural Language Query Parsing**: Convert natural language queries to structured database operations
-- **MongoDB Integration**: Query existing MongoDB collections with optimized results
-- **Context-Optimized Responses**: Formatted responses designed for small context windows (3k tokens)
-- **Domain-Specific Formatting**: Custom formatting for different entity types (novels, chapters, characters, Q&A)
-- **Python Scrapers**: Integrated scrapers for populating the database from various sources
+- **Python Scraper Integrations**: Included as submodules for populating databases from various sources
 
-## Data Models
+## 🔧 Architecture
 
-The server uses the following optimized data models:
+```
+                    ┌───────────────────┐
+                    │                   │
+                    │     Language      │
+                    │      Models       │
+                    │                   │
+                    └─────────┬─────────┘
+                              │
+                              │ MCP (JSON-RPC 2.0)
+                              ▼
+┌─────────────────────────────────────────────────────┐
+│                                                     │
+│  ┌─────────────────┐           ┌─────────────────┐  │
+│  │                 │           │                 │  │
+│  │   SSE Server    │◄────────►│   MCP Handler   │  │
+│  │  (Port 3000)    │           │                 │  │
+│  └─────────────────┘           └────────┬────────┘  │
+│                                         │           │
+│                                         ▼           │
+│                                ┌────────────────┐   │
+│  ┌─────────────────┐           │                │   │
+│  │                 │           │  DB Services   │   │
+│  │   CRUD API      │◄────────►│                │   │
+│  │  (Port 3001)    │           └────────────────┘   │
+│  └─────────────────┘                   │           │
+│                                         │           │
+└─────────────────────────────────────────┼───────────┘
+                                          │
+                                          ▼
+                                 ┌─────────────────┐
+                                 │                 │
+                                 │    MongoDB      │
+                                 │                 │
+                                 └─────────────────┘
+```
 
-- **Novels**: Core metadata about novels
-- **Chapters**: Summaries and key points (with full content available on demand)
-- **Characters**: Character details with compact relationship representations
-- **Q&A**: Knowledge base entries with tags for efficient querying
-
-## Architecture
-
-- **MCP Protocol Layer**: Handles JSON-RPC requests/responses following MCP specification
-- **Query Parser**: Converts natural language to structured queries
-- **Database Service**: Performs optimized MongoDB operations
-- **Response Formatter**: Formats responses in an LLM-friendly way
-- **Scraper Integration**: Python scrapers to help populate the database
-
-## Getting Started
+## 🏁 Getting Started
 
 ### Prerequisites
 
-- Rust (latest stable version)
-- MongoDB instance with your domain data
-- Python 3.7+ (for scrapers)
-- Git (for cloning and working with the repository)
-
-### Repository Structure
-
-The project is organized as follows:
-
-```
-mcp_database/
-├── src/              # Rust source code for the MCP server
-│   ├── db/           # Database connection and operations
-│   ├── handlers/     # HTTP request handlers 
-│   ├── mcp/          # MCP protocol implementation
-│   ├── models/       # Data models and structures
-│   ├── services/     # Business logic implementations
-│   └── utils/        # Utility functions
-├── docs/             # Documentation
-│   └── database_interface.md  # Detailed API and schema docs
-└── scraper_library/  # Python scrapers for data collection (submodule)
-    └── src/          # Scraper source code for various sites
-```
-
-### Git Repository
-
-The project is hosted on GitHub. To contribute or use:
-
-1. **Clone the Repository**:
-   ```bash
-   # Clone with submodules (recommended)
-   git clone --recursive https://github.com/SFBB/mcp-mongodb-novel-server.git
-   
-   # Or clone normally and then initialize submodules
-   git clone https://github.com/SFBB/mcp-mongodb-novel-server.git
-   cd mcp-mongodb-novel-server
-   git submodule update --init --recursive
-   ```
-
-2. **Stay Updated**:
-   ```bash
-   # Pull latest changes including submodule updates
-   git pull --recurse-submodules
-   
-   # Update only submodules to their latest versions
-   git submodule update --remote
-   ```
-
-3. **Contributing**:
-   ```bash
-   # Create a new branch for your feature
-   git checkout -b feature/your-feature-name
-   
-   # Make changes, then commit
-   git add .
-   git commit -m "Add feature: description of your changes"
-   
-   # Push your branch
-   git push -u origin feature/your-feature-name
-   
-   # Then create a Pull Request on GitHub
-   ```
+- Rust (latest stable toolchain)
+- MongoDB instance
+- Python 3.7+ (for data scrapers)
 
 ### Installation
 
-1. Clone this repository with submodules as shown above
+1. **Clone the repository with submodules**:
+   ```bash
+   git clone --recursive https://github.com/SFBB/mcp-mongodb-novel-server.git
+   cd mcp-mongodb-novel-server
+   ```
 
-2. Create a `.env` file with the following variables:
+2. **Configure environment**:
+   Create a `.env` file in the project root:
    ```
    MONGODB_URI=mongodb://localhost:27017
-   DATABASE_NAME=your_database_name
-   PORT=3000
+   DATABASE_NAME=your_database
+   PORT=3000  # Base port (MCP SSE server)
+               # CRUD API will use PORT+1 (3001)
    ```
-3. Build and run the MCP server:
-   ```
+
+3. **Build and run**:
+   ```bash
    cargo build --release
    cargo run --release
    ```
 
-### MongoDB Setup
+Upon successful startup, you'll see:
+- MCP SSE endpoint available at http://127.0.0.1:3000/sse
+- MCP POST endpoint available at http://127.0.0.1:3000/message
+- CRUD API endpoints available at http://127.0.0.1:3001/api/...
 
-Your MongoDB should have collections structured according to the models defined in this project:
+### Usage
 
-- `novels`: Novel metadata
-- `chapters`: Chapter information
-- `characters`: Character details
-- `qa`: Question and answer pairs
+You firstly need to run this server. Then configure your client based on JSON-RPC or SSE.
 
-For detailed schema information and indexing recommendations, see the [Database Interface Documentation](docs/database_interface.md).
+This is an exmaple setup for VSCode copilot client.
 
-## Usage
-
-### MCP Endpoint
-
-Send MCP-compliant JSON-RPC requests to the `/mcp` endpoint:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "query",
-  "params": {
-    "query": "Tell me about the main character in the novel"
-  }
-}
+```JSON
+"mcp-mongodb-novel-server": {
+    "type": "sse",
+    "url": "http://localhost:3000/sse"
+}  
 ```
 
-### CRUD API
+## 🔌 Server Endpoints
 
-The server also provides REST API endpoints for managing database content:
+### 1. MCP Server (SSE Protocol)
 
-- `GET /api/novels` - List all novels
-- `POST /api/novels` - Create a new novel
-- `GET /api/novels/:id` - Get novel details
-- `PATCH /api/novels/:id` - Update a novel
-- `DELETE /api/novels/:id` - Delete a novel
+The MCP server provides two endpoints:
+- **SSE Endpoint**: `http://localhost:3000/sse`
+  - For establishing SSE connections to receive events
+- **POST Endpoint**: `http://localhost:3000/message`
+  - For sending JSON-RPC 2.0 formatted commands
 
-Similar endpoints exist for chapters, characters, and Q&A entries.
-
-### Python Scrapers
-
-The project includes Python scrapers (as a Git submodule) for populating the database:
-
-1. Set up the Python environment:
-   ```
-   cd scraper_library
-   pip install -r requirements.txt
-   ```
-
-2. Use the scrapers to populate your database:
-   ```
-   python -m src.scrape_<source> --help
-   ```
-
-Available scrapers include:
-- `scrape_69shunet.py` - 69Shu.net
-- `scrape_baobao88.py` - BaoBao88
-- `scrape_quanben.py` - Quanben
-- `scrape_syosetu.py` - Syosetu
-- `scrape_ximalaya.py` - Ximalaya
-
-Check each scraper's documentation for specific usage instructions.
-
-### Example Queries
-
-- "What happens in chapter 3 of the novel?"
-- "Tell me about the protagonist character"
-- "Find all Q&A related to magic systems"
-- "Summarize the novel's plot"
-
-## Updated MCP Methods
-
-The MCP server now supports the following methods for direct invocation by LLMs:
-
-### 1. Query Character Information
-- **Method**: `query_character`
-- **Description**: Retrieve detailed information about a character.
-- **Parameters**:
-  ```json
-  {
-    "character_id": "<character_id>"
-  }
-  ```
-
-### 2. Query Novel Information
-- **Method**: `query_novel`
-- **Description**: Retrieve metadata about a novel.
-- **Parameters**:
-  ```json
-  {
-    "novel_id": "<novel_id>"
-  }
-  ```
-
-### 3. Query Specific Chapter Information
-- **Method**: `query_chapter`
-- **Description**: Retrieve information about a specific chapter by number, title, or ID.
-- **Parameters**:
-  ```json
-  {
-    "chapter_id": "<chapter_id>",
-    "chapter_number": <chapter_number>,
-    "chapter_title": "<chapter_title>"
-  }
-  ```
-
-### 4. Query Q&A Information Using Regex
-- **Method**: `query_qa_regex`
-- **Description**: Retrieve a list of Q&A entries matching a regex pattern.
-- **Parameters**:
-  ```json
-  {
-    "regex_pattern": "<regex_pattern>"
-  }
-  ```
-
-### 5. Query Chapter List Using Regex
-- **Method**: `query_chapter_regex`
-- **Description**: Retrieve a list of chapters matching a regex pattern.
-- **Parameters**:
-  ```json
-  {
-    "regex_pattern": "<regex_pattern>"
-  }
-  ```
-
-### 6. Query Character List Using Regex
-- **Method**: `query_character_regex`
-- **Description**: Retrieve a list of characters matching a regex pattern.
-- **Parameters**:
-  ```json
-  {
-    "regex_pattern": "<regex_pattern>"
-  }
-  ```
-
-### 7. Update Chapter Summary
-- **Method**: `update_chapter_summary`
-- **Description**: Allows authorized LLMs to update the summary of a specific chapter.
-- **Parameters**:
-  ```json
-  {
-    "auth_token": "<authentication_token>",
-    "chapter_id": "<chapter_id>",
-    "summary": "<new_summary>"
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "content": "Chapter summary updated successfully",
-    "metadata": null
-  }
-  ```
-
-### Example JSON-RPC Request
+Example MCP request (using POST to `/message`):
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 1,
+  "id": "request-1",
   "method": "query_character",
   "params": {
-    "character_id": "12345"
+    "character_id": "5f8e4c3b2a1d"
   }
 }
 ```
 
-### Example JSON-RPC Response
+### 2. CRUD API (REST)
+
+The CRUD API provides RESTful endpoints for managing database content:
+
+- **Novels**: `/api/novels`
+- **Chapters**: `/api/chapters`
+- **Characters**: `/api/characters`
+- **Q&A**: `/api/qa`
+
+Standard REST operations (`GET`, `POST`, `PATCH`, `DELETE`) are supported.
+
+## 📊 Data Models
+
+### Novels
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "content": "Character details...",
-    "metadata": {
-      "token_count": 50,
-      "query_time_ms": 10
-    }
-  }
+  "_id": "ObjectId",
+  "title": "String",
+  "author": "String",
+  "summary": "String",
+  "year": "Number",
+  "tags": ["String"]
 }
 ```
 
-## Development
+### Chapters
+```json
+{
+  "_id": "ObjectId",
+  "novel_id": "ObjectId",
+  "title": "String",
+  "chapter_number": "Number",
+  "summary": "String",
+  "content": "String",
+  "word_count": "Number"
+}
+```
 
-### Updating the Scraper Library
+### Characters
+```json
+{
+  "_id": "ObjectId",
+  "novel_id": "ObjectId",
+  "name": "String",
+  "description": "String",
+  "traits": ["String"],
+  "relationships": [
+    {
+      "character_id": "ObjectId",
+      "type": "String"
+    }
+  ]
+}
+```
 
-The scraper library is included as a Git submodule. To update it to the latest version:
+### Q&A
+```json
+{
+  "_id": "ObjectId",
+  "question": "String",
+  "answer": "String",
+  "tags": ["String"],
+  "novel_id": "ObjectId"
+}
+```
+
+## 🤖 MCP Methods
+
+The server supports the following MCP methods for LLM interaction:
+
+### Query Methods
+
+| Method | Description | Parameters |
+|--------|-------------|------------|
+| `query_character` | Get character details | `{"character_id": "string"}` |
+| `query_novel` | Get novel metadata | `{"novel_id": "string"}` |
+| `query_chapter` | Get chapter information | `{"chapter_id": "string"}` or `{"chapter_number": number}` or `{"chapter_title": "string"}` |
+| `query_qa_regex` | Find Q&A entries by regex | `{"regex_pattern": "string"}` |
+| `query_chapter_regex` | Find chapters by regex | `{"regex_pattern": "string"}` |
+| `query_character_regex` | Find characters by regex | `{"regex_pattern": "string"}` |
+
+### Update Methods
+
+| Method | Description | Parameters |
+|--------|-------------|------------|
+| `update_chapter_summary` | Update chapter summary | `{"auth_token": "string", "chapter_id": "string", "summary": "string"}` |
+
+## 📥 Data Population
+
+This project includes Python scrapers as submodules to help populate your MongoDB:
+
+### Character Scraper
+```bash
+cd character-scraper
+pip install -r requirements.txt
+python src/scraper.py --config config/settings.json
+```
+
+### Novel Scraper Library
+```bash
+cd scraper_library
+pip install -r requirements.txt
+python -m src.scrapers.scrape_syosetu --url <novel_url>
+```
+
+Available scrapers include:
+- `scrape_syosetu.py` (Syosetu novels)
+- `scrape_69shu.py` (69Shu novels)
+- `scrape_ximalaya.py` (Ximalaya audio books)
+- `scrape_qa.py` (Q&A content)
+- `scrape_x_timeline.py` (Twitter/X timelines)
+- And more...
+
+## 🛠️ Development
+
+### Updating Submodules
 
 ```bash
-# Navigate to the submodule directory
+# Update all submodules to their latest version
+git submodule update --remote --merge
+
+# Navigate to a specific submodule and pull changes
 cd scraper_library
-
-# Fetch the latest changes
-git fetch origin
-git checkout main
-git pull
-
-# Go back to the main project and commit the submodule update
+git pull origin main
 cd ..
 git add scraper_library
-git commit -m "Update scraper library to latest version"
+git commit -m "Update scraper_library"
 ```
 
 ### Running Tests
 
 ```bash
-# Run all tests
 cargo test
-
-# Run specific tests
-cargo test db_service
 ```
 
 ### Code Style
@@ -347,10 +276,13 @@ cargo fmt -- --check
 cargo clippy
 ```
 
-## Versioning
+### Performance Tuning
 
-We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/SFBB/mcp-mongodb-novel-server/tags).
+For high-traffic deployments, consider:
+1. MongoDB indexing for text search and relationships
+2. Increase Tokio worker threads for CPU-bound operations
+3. Configure MongoDB connection pooling
 
-## License
+## 📄 License
 
-MIT
+This project is licensed under the MIT License - see the LICENSE file for details.
