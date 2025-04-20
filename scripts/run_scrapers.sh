@@ -81,8 +81,8 @@ done
 
 # Check if MCP MongoDB server is running
 echo "Checking if MCP MongoDB server is running..."
-if ! curl -s "http://localhost:3000/api/novels" > /dev/null; then
-    echo "Warning: MCP MongoDB server does not appear to be running at http://localhost:3000"
+if ! curl -s "http://localhost:3001/api/novels" > /dev/null; then
+    echo "Warning: MCP MongoDB server does not appear to be running at http://localhost:3001"
     echo "You may need to start the server before running the scrapers."
     echo "Continue anyway? (y/n)"
     read -r CONTINUE

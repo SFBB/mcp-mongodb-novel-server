@@ -25,12 +25,14 @@ sys.path.append(str(SCRAPER_LIB_DIR))
 
 # Import the scraper_library modules
 try:
-    from src.scraper_base import ScraperBase
-    from src.scrape_69shunet import Scraper69Shu 
-    from src.scrape_baobao88 import ScraperBaobao
-    from src.scrape_quanben import ScraperQuanben
-    from src.scrape_syosetu import ScraperSyosetu
-    from src.scrape_ximalaya import ScraperXimalaya
+    # Import base components
+    from src.interfaces import Scraper, NovelScraper
+    # Import specific scrapers from the correct paths
+    from src.scrapers.scraper_69shu import Scraper69Shu
+    from src.scrapers.scraper_baobao88 import ScraperBaobao88 as ScraperBaobao
+    from src.scrapers.scraper_quanben import ScraperQuanben
+    from src.scrapers.scraper_syosetu import ScraperSyosetu
+    from src.scrapers.scraper_ximalaya import ScraperXimalaya
 except ImportError as e:
     print(f"Error importing scraper_library: {e}")
     print("Make sure the scraper_library submodule is initialized.")
@@ -241,8 +243,8 @@ def main():
                        help="The scraper to use")
     parser.add_argument("--url", "-u", required=True,
                        help="URL of the novel to scrape")
-    parser.add_argument("--api", "-a", default="http://localhost:3000",
-                       help="URL of the MCP MongoDB server API (default: http://localhost:3000)")
+    parser.add_argument("--api", "-a", default="http://localhost:3001",
+                       help="URL of the MCP MongoDB server API (default: http://localhost:3001)")
     args = parser.parse_args()
     
     try:

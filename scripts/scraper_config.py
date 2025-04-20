@@ -8,7 +8,7 @@ Each scraper has a list of novel URLs to scrape.
 """
 
 # API endpoint for the MCP MongoDB server
-API_URL = "http://localhost:3000"
+API_URL = "http://localhost:3001"
 
 # Maximum number of chapters to scrape per novel
 MAX_CHAPTERS = 50
