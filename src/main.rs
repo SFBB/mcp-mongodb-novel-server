@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         ct: tokio_util::sync::CancellationToken::new(),
     };
     let sse_server = SseServer::serve_with_config(config).await?;
-    sse_server.with_service(move || MpcHandler::new(db_service.clone()));
+    let ct = sse_server.with_service(move || MpcHandler::new(db_service.clone()));
     
     // Build CRUD API router
     let api_app = api_router(
@@ -103,8 +103,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("CRUD API endpoints available at http://{}:{}/api/...", addr.ip(), port);
     
     // Create a TCP listener
-    let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // let listener = TcpListener::bind(addr).await?;
+    // axum::serve(listener, app).await?;
     
+    tokio::signal::ctrl_c().await?;
+    ct.cancel();
+
     Ok(())
 }
