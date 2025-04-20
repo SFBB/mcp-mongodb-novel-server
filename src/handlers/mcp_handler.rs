@@ -30,7 +30,6 @@ use crate::models::{SearchParams, domain::MCPResponse};
 use crate::services::db_service::DatabaseService;
 use crate::utils::QueryParser;
 use crate::mcp::conversion::ContentExt;
-use crate::mcp::conversion::{MpcRequest, MpcResponse, MpcError};
 use crate::utils::query_parser;
 use std::error::Error;
 use serde_json::Value;
