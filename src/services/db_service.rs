@@ -28,7 +28,7 @@ pub trait DatabaseService {
 
 #[derive(Clone)]
 pub struct MongoDBService {
-    db: DatabaseConnection,
+    pub db: DatabaseConnection,
 }
 
 impl MongoDBService {
