@@ -1,9 +1,70 @@
 use std::collections::HashMap;
+use std::borrow::Cow;
 use serde_json::Value;
-use rmcp::model::CallToolResult;
+use rmcp::model::{CallToolResult, Content, Annotated, PromptMessageContent};
 use serde_json::to_string;
+use serde_json::json;
+use std::error::Error;
+use uuid::Uuid;
 
 use crate::mcp::protocol::{MCPParams, MCPResult};
+
+// Define basic structures for MPC protocol
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MpcRequest {
+    pub id: String,
+    pub q: String,
+    pub ctx: RequestContext,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MpcResponse {
+    pub id: String,
+    pub status: i32,
+    pub content: Value,
+    pub ctx: RequestContext,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RequestContext {
+    pub request_id: String,
+    pub token_count: i32,
+    pub max_tokens: i32,
+    pub remaining_tokens: i32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MpcError {
+    pub code: i32,
+    pub message: String,
+}
+
+impl MpcError {
+    pub fn new(code: i32, message: String) -> Self {
+        Self { code, message }
+    }
+}
+
+// Extension trait to add from_raw functionality to Content
+pub trait ContentExt {
+    fn from_raw<T: Into<String>>(text: T) -> Self;
+}
+
+impl ContentExt for Content {
+    fn from_raw<T: Into<String>>(text: T) -> Self {
+        Content {
+            raw: rmcp::model::RawContent::text(text),
+            annotations: None,
+        }
+    }
+}
+
+// Helper function to create PromptMessageContent from a string
+pub fn create_message_content(text: &str) -> PromptMessageContent {
+    PromptMessageContent::Text { 
+        text: text.to_string()
+    }
+}
 
 // Convert our internal MCPParams to RMCP-compatible format
 pub fn mcp_params_to_rmcp_params(params: MCPParams) -> HashMap<String, Value> {

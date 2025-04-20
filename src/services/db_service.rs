@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::sync::Arc;
 use async_trait::async_trait;
 use mongodb::{
     bson::{doc, Document, oid::ObjectId},
@@ -16,9 +17,12 @@ pub trait DatabaseService {
     async fn search_chapters(&self, params: &SearchParams) -> Result<MCPResponse>;
     async fn search_characters(&self, params: &SearchParams) -> Result<MCPResponse>;
     async fn search_qa(&self, params: &SearchParams) -> Result<MCPResponse>;
+    async fn search_all(&self, params: &SearchParams) -> Result<serde_json::Value>;
     async fn search_qa_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>>;
     async fn search_chapters_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>>;
     async fn search_characters_by_regex(&self, regex_pattern: &str) -> Result<Vec<serde_json::Value>>;
+    async fn get_chapter_content(&self, chapter_id: &str) -> Result<Option<String>>;
+    async fn get_character_details(&self, character_id: &str) -> Result<Option<Character>>;
     async fn update_chapter_summary(&self, chapter_id: &str, new_summary: &str) -> Result<()>;
 }
 
@@ -38,22 +42,6 @@ impl MongoDBService {
         // Very rough estimate: 1 token ≈ 4 chars in English text
         let json_string = serde_json::to_string(data).unwrap_or_default();
         (json_string.len() as u32 + 3) / 4
-    }
-
-    // Helper function to build a search filter based on keywords
-    fn build_text_search_filter(keywords: &[String]) -> Document {
-        if keywords.is_empty() {
-            return doc! {};
-        }
-
-        // Join keywords for text search
-        let search_text = keywords.join(" ");
-        
-        doc! {
-            "$text": {
-                "$search": search_text
-            }
-        }
     }
 
     // Helper to convert MongoDB documents to JSON
@@ -95,13 +83,29 @@ impl MongoDBService {
     }
 }
 
+// Helper function to build a search filter based on keywords
+fn build_text_search_filter(keywords: &[String]) -> Document {
+    if keywords.is_empty() {
+        return doc! {};
+    }
+
+    // Join keywords for text search
+    let search_text = keywords.join(" ");
+    
+    doc! {
+        "$text": {
+            "$search": search_text
+        }
+    }
+}
+
 #[async_trait]
-impl DatabaseService for MongoDBService {
+impl DatabaseService for Arc<MongoDBService> {
     async fn search_novels(&self, params: &SearchParams) -> Result<MCPResponse> {
         let start = Instant::now();
         
         // Build filter from search params
-        let mut filter = Self::build_text_search_filter(&params.keywords);
+        let mut filter = build_text_search_filter(&params.keywords);
         
         // Add additional filters if provided
         if let Some(filters) = &params.filters {
@@ -140,7 +144,7 @@ impl DatabaseService for MongoDBService {
         let start = Instant::now();
         
         // Build filter from search params
-        let mut filter = Self::build_text_search_filter(&params.keywords);
+        let mut filter = build_text_search_filter(&params.keywords);
         
         // Add additional filters if provided
         if let Some(filters) = &params.filters {
@@ -193,7 +197,7 @@ impl DatabaseService for MongoDBService {
         let start = Instant::now();
         
         // Build filter from search params
-        let mut filter = Self::build_text_search_filter(&params.keywords);
+        let mut filter = build_text_search_filter(&params.keywords);
         
         // Add additional filters if provided
         if let Some(filters) = &params.filters {
@@ -240,7 +244,7 @@ impl DatabaseService for MongoDBService {
         let start = Instant::now();
         
         // Build filter from search params
-        let mut filter = Self::build_text_search_filter(&params.keywords);
+        let mut filter = build_text_search_filter(&params.keywords);
         
         // Add additional filters if provided
         if let Some(filters) = &params.filters {
@@ -377,5 +381,78 @@ impl DatabaseService for MongoDBService {
         }
         
         Ok(())
+    }
+
+    async fn search_all(&self, params: &SearchParams) -> Result<serde_json::Value> {
+        // Search all collections in parallel for token-efficient results
+        let novels_future = self.search_novels(params);
+        let chapters_future = self.search_chapters(params);
+        let characters_future = self.search_characters(params);
+        let qa_future = self.search_qa(params);
+        
+        // Execute all searches in parallel
+        let (novels_result, chapters_result, characters_result, qa_result) = tokio::join!(
+            novels_future,
+            chapters_future,
+            characters_future,
+            qa_future
+        );
+        
+        // Extract data from each result
+        let novels_data = novels_result?.data;
+        let chapters_data = chapters_result?.data;
+        let characters_data = characters_result?.data;
+        let qa_data = qa_result?.data;
+        
+        // Create a combined result object
+        let combined = serde_json::json!({
+            "novels": novels_data,
+            "chapters": chapters_data,
+            "characters": characters_data,
+            "qa": qa_data
+        });
+        
+        Ok(combined)
+    }
+
+    async fn get_chapter_content(&self, chapter_id: &str) -> Result<Option<String>> {
+        // Convert string ID to ObjectId
+        let object_id = match ObjectId::parse_str(chapter_id) {
+            Ok(oid) => oid,
+            Err(_) => return Ok(None), // Invalid ID format, return None
+        };
+        
+        // Query for the chapter
+        let filter = doc! { "_id": object_id };
+        let collection = self.db.get_collection::<Chapter>("chapters");
+        
+        if let Some(chapter) = collection.find_one(filter, None).await? {
+            // Return the content if available, otherwise return the summary
+            if let Some(content) = chapter.content {
+                Ok(Some(content))
+            } else if let summary = chapter.summary {
+                Ok(Some(format!("Summary: {}", summary)))
+            } else {
+                Ok(Some("No content or summary available for this chapter.".to_string()))
+            }
+        } else {
+            Ok(None) // Chapter not found
+        }
+    }
+
+    async fn get_character_details(&self, character_id: &str) -> Result<Option<Character>> {
+        // Convert string ID to ObjectId
+        let object_id = match ObjectId::parse_str(character_id) {
+            Ok(oid) => oid,
+            Err(_) => return Ok(None), // Invalid ID format, return None
+        };
+        
+        // Query for the character
+        let filter = doc! { "_id": object_id };
+        let collection = self.db.get_collection::<Character>("characters");
+        
+        // Return the character if found
+        let character = collection.find_one(filter, None).await?;
+        Ok(character)
     }
 }

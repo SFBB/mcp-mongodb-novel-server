@@ -6,520 +6,811 @@ use axum::{
 };
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::borrow::Cow;
+use rmcp::{
+    model::{
+        CallToolResult, Content, PromptMessage, Implementation, 
+        ListPromptsResult, ProtocolVersion, Prompt, ServerCapabilities, 
+        ServerInfo, Tool, Annotated, PromptMessageRole,
+        PromptMessageContent
+    }, 
+    service::{RequestContext, Service},
+    Error as RmcpError, ServerHandler, RoleServer,
+};
+use serde_json::json;
+use warp::Filter;
 
-use crate::mcp::{MCPError, MCPParams, MCPRequest, MCPResponse, MCPResult};
-use crate::models::SearchParams;
-use crate::services::DatabaseService;
+use axum::response::sse::{Sse, Event};
+use futures_util::stream::{StreamExt, Stream}; // Make sure this is present
+use std::convert::Infallible;
+use std::time::Duration;
+use tokio_stream::wrappers::IntervalStream;
+
+use crate::models::{SearchParams, domain::MCPResponse};
+use crate::services::db_service::DatabaseService;
 use crate::utils::QueryParser;
+use crate::mcp::conversion::ContentExt;
+use crate::mcp::conversion::{MpcRequest, MpcResponse, MpcError};
+use crate::utils::query_parser;
+use std::error::Error;
+use serde_json::Value;
+use uuid::Uuid;
+use std::io::{BufRead, Write};
 
+/// Server state for handling MCP requests
+#[derive(Clone)]
 pub struct ServerState<T: DatabaseService> {
     pub db_service: T,
 }
 
-// Handler for MCP requests
-pub async fn mcp_handler<T: DatabaseService>(
-    State(state): State<Arc<ServerState<T>>>,
-    Json(request): Json<MCPRequest>,
-) -> Result<Json<MCPResponse>, MCPErrorResponse> {
-    // Validate JSON-RPC request
-    if request.jsonrpc != "2.0" {
-        return Err(MCPErrorResponse {
-            code: -32600,
-            message: "Invalid JSON-RPC request".to_string(),
-        });
+/// MPC handler that implements the official RMCP SDK interface
+#[derive(Clone)]
+pub struct MpcHandler<T: DatabaseService + Clone + Send + Sync + 'static> {
+    db_service: T
+}
+
+impl<T> MpcHandler<T> 
+where 
+    T: DatabaseService + Clone + Send + Sync + 'static 
+{
+    pub fn new(db_service: T) -> Self {
+        MpcHandler { db_service }
     }
-
-    // Process based on the method
-    let result = match request.method.as_str() {
-        "query" => handle_query(&state.db_service, request.params).await,
-        "get_chapter_content" => handle_chapter_content(&state.db_service, request.params).await,
-        "get_character_details" => handle_character_details(&state.db_service, request.params).await,
-        "query_qa_regex" => handle_qa_regex_query(&state.db_service, request.params).await,
-        "query_chapter_regex" => handle_chapter_regex_query(&state.db_service, request.params).await,
-        "query_character_regex" => handle_character_regex_query(&state.db_service, request.params).await,
-        "mcp.capabilities" => handle_capabilities().await,
-        "mcp.prompts" => handle_prompts().await,
-        "initialize" => handle_initialize(&request.params).await,
-        "notifications/initialized" => {
-            tracing::info!("Received notifications/initialized");
-            // Per JSON-RPC 2.0, notifications do not expect a response (no id field)
-            if request.id.is_none() {
-                // Just log and return early, do not send a response
-                return Err(MCPErrorResponse {
-                    code: -32000,
-                    message: "Notification received, no response sent".to_string(),
-                });
-            }
-            // If id is present (should not happen), return a no-op result for compatibility
-            return Ok(Json(MCPResponse {
-                jsonrpc: "2.0".to_string(),
-                id: request.id,
-                result: None,
-                error: None,
-            }));
-        },
-        // Conditionally expose write-access methods
-        #[cfg(feature = "mcp_write_access")]
-        "update_chapter_summary" => handle_update_chapter_summary(&state.db_service, request.params).await,
-        #[cfg(not(feature = "mcp_write_access"))]
-        "update_chapter_summary" => Err(MCPErrorResponse {
-            code: -32601,
-            message: format!("Method '{}' not found", request.method),
-        }),
-        _ => Err(MCPErrorResponse {
-            code: -32601,
-            message: format!("Method '{}' not found", request.method),
-        }),
-    }?;
-
-    // Construct successful response
-    Ok(Json(MCPResponse {
-        jsonrpc: "2.0".to_string(),
-        id: request.id,
-        result: Some(result),
-        error: None,
-    }))
 }
 
-// Handle database query requests
-async fn handle_query<T: DatabaseService>(
-    db_service: &T,
-    params: MCPParams,
-) -> Result<MCPResult, MCPErrorResponse> {
-    // Parse the natural language query into structured params
-    let query = params.query.as_ref().ok_or(MCPErrorResponse {
-        code: -32602,
-        message: "Missing 'query' field in params".to_string(),
-    })?;
-    let search_params = QueryParser::parse_natural_language_query(query);
-    
-    // Execute the appropriate search based on collection type
-    let db_response = match search_params.collection.as_str() {
-        "novels" => db_service.search_novels(&search_params).await,
-        "chapters" => db_service.search_chapters(&search_params).await,
-        "characters" => db_service.search_characters(&search_params).await,
-        "qa" => db_service.search_qa(&search_params).await,
-        _ => {
-            return Err(MCPErrorResponse {
-                code: -32602,
-                message: format!("Unknown collection type: {}", search_params.collection),
-            });
-        }
-    };
-
-    // Handle database errors
-    let db_result = match db_response {
-        Ok(result) => result,
-        Err(e) => {
-            return Err(MCPErrorResponse {
-                code: -32603,
-                message: format!("Database error: {}", e),
-            });
-        }
-    };
-
-    // Format result for MCP protocol
-    let content = format_content_for_llm(&db_result.data, &search_params);
-    
-    let metadata_map: HashMap<String, serde_json::Value> = [
-        ("token_count".to_string(), serde_json::to_value(db_result.metadata.token_count).unwrap_or(serde_json::Value::Null)),
-        ("query_time_ms".to_string(), serde_json::to_value(db_result.metadata.query_time_ms).unwrap_or(serde_json::Value::Null)),
-        ("has_more".to_string(), serde_json::to_value(db_result.metadata.has_more).unwrap_or(serde_json::Value::Null)),
-        ("next_page_token".to_string(), serde_json::to_value(db_result.metadata.next_page_token).unwrap_or(serde_json::Value::Null)),
-    ].into_iter().collect();
-    
-    Ok(MCPResult {
-        content,
-        metadata: Some(metadata_map),
-    })
-}
-
-// Handle specific chapter content requests
-async fn handle_chapter_content<T: DatabaseService>(
-    _db_service: &T,
-    params: MCPParams,
-) -> Result<MCPResult, MCPErrorResponse> {
-    // This would query for specific chapter content
-    // Implementation simplified for example purposes
-    
-    Ok(MCPResult {
-        content: format!("Chapter content for query: {}", params.query.as_deref().unwrap_or("<none>")),
-        metadata: None,
-    })
-}
-
-// Handle specific character details requests
-async fn handle_character_details<T: DatabaseService>(
-    _db_service: &T,
-    params: MCPParams,
-) -> Result<MCPResult, MCPErrorResponse> {
-    // This would query for detailed character information
-    // Implementation simplified for example purposes
-    
-    Ok(MCPResult {
-        content: format!("Character details for query: {}", params.query.as_deref().unwrap_or("<none>")),
-        metadata: None,
-    })
-}
-
-// Handle regex-based Q&A queries
-async fn handle_qa_regex_query<T: DatabaseService>(
-    db_service: &T,
-    params: MCPParams,
-) -> Result<MCPResult, MCPErrorResponse> {
-    let regex_pattern = params.query.as_deref().unwrap_or("");
-    let qa_entries = db_service.search_qa_by_regex(regex_pattern).await?;
-    let content = format_qa(&qa_entries);
-
-    Ok(MCPResult {
-        content,
-        metadata: None,
-    })
-}
-
-// Handle regex-based chapter queries
-async fn handle_chapter_regex_query<T: DatabaseService>(
-    db_service: &T,
-    params: MCPParams,
-) -> Result<MCPResult, MCPErrorResponse> {
-    let regex_pattern = params.query.as_deref().unwrap_or("");
-    let chapters = db_service.search_chapters_by_regex(regex_pattern).await?;
-    let content = format_chapters(&chapters);
-
-    Ok(MCPResult {
-        content,
-        metadata: None,
-    })
-}
-
-// Handle regex-based character queries
-async fn handle_character_regex_query<T: DatabaseService>(
-    db_service: &T,
-    params: MCPParams,
-) -> Result<MCPResult, MCPErrorResponse> {
-    let regex_pattern = params.query.as_deref().unwrap_or("");
-    let characters = db_service.search_characters_by_regex(regex_pattern).await?;
-    let content = format_characters(&characters);
-
-    Ok(MCPResult {
-        content,
-        metadata: None,
-    })
-}
-
-// Handle the mcp.capabilities request
-async fn handle_capabilities() -> Result<MCPResult, MCPErrorResponse> {
-    let methods = vec![
-        serde_json::json!({
-            "method": "query_character",
-            "description": "Retrieve detailed information about a character.",
-            "parameters": { "character_id": "string" }
-        }),
-        serde_json::json!({
-            "method": "query_novel",
-            "description": "Retrieve metadata about a novel.",
-            "parameters": { "novel_id": "string" }
-        }),
-        serde_json::json!({
-            "method": "query_chapter",
-            "description": "Retrieve information about a specific chapter by number, title, or ID.",
-            "parameters": { "chapter_id": "string", "chapter_number": "integer", "chapter_title": "string" }
-        }),
-        serde_json::json!({
-            "method": "query_qa_regex",
-            "description": "Retrieve a list of Q&A entries matching a regex pattern.",
-            "parameters": { "regex_pattern": "string" }
-        }),
-        serde_json::json!({
-            "method": "query_chapter_regex",
-            "description": "Retrieve a list of chapters matching a regex pattern.",
-            "parameters": { "regex_pattern": "string" }
-        }),
-        serde_json::json!({
-            "method": "query_character_regex",
-            "description": "Retrieve a list of characters matching a regex pattern.",
-            "parameters": { "regex_pattern": "string" }
-        }),
-    ];
-    // Conditionally add write-access methods
-    #[cfg(feature = "mcp_write_access")]
-    let methods = {
-        let mut m = methods;
-        m.push(serde_json::json!({
-            "method": "update_chapter_summary",
-            "description": "Update the summary of a chapter (write access).",
-            "parameters": { "chapter_id": "string", "summary": "string", "auth_token": "string" }
-        }));
-        m
-    };
-
-    let capabilities = serde_json::json!({
-        "methods": methods
-    });
-
-    Ok(MCPResult {
-        content: capabilities.to_string(),
-        metadata: None,
-    })
-}
-
-// Handle the mcp.prompts request
-async fn handle_prompts() -> Result<MCPResult, MCPErrorResponse> {
-    let prompts = serde_json::json!({
-        "prompts": [
-            "What happens in chapter 3 of the novel?",
-            "Tell me about the protagonist character.",
-            "Find all Q&A related to magic systems.",
-            "Summarize the novel's plot.",
-            "List all chapters with titles containing 'magic'.",
-            "Retrieve character details for 'John Doe'."
-        ]
-    });
-
-    Ok(MCPResult {
-        content: prompts.to_string(),
-        metadata: None,
-    })
-}
-
-// Add write-access methods for updating summaries and cross-references
-async fn handle_update_chapter_summary<T: DatabaseService>(
-    db_service: &T,
-    params: MCPParams,
-) -> Result<MCPResult, MCPErrorResponse> {
-    // Validate authentication token
-    if !validate_auth_token(&params.options) {
-        return Err(MCPErrorResponse {
-            code: -32604, // Unauthorized
-            message: "Invalid or missing authentication token".to_string(),
-        });
+// Helper to create PromptMessageContent from string
+fn create_content(text: &str) -> PromptMessageContent {
+    PromptMessageContent::Text { 
+        text: text.to_string()
     }
-
-    // Extract chapter ID and new summary from params
-    let chapter_id = params.options.get("chapter_id").and_then(|v| v.as_str());
-    let new_summary = params.options.get("summary").and_then(|v| v.as_str());
-
-    if chapter_id.is_none() || new_summary.is_none() {
-        return Err(MCPErrorResponse {
-            code: -32602, // Invalid params
-            message: "Missing chapter_id or summary in request".to_string(),
-        });
-    }
-
-    // Update the chapter summary in the database
-    db_service
-        .update_chapter_summary(chapter_id.unwrap(), new_summary.unwrap())
-        .await
-        .map_err(|e| MCPErrorResponse {
-            code: -32603, // Internal error
-            message: format!("Failed to update chapter summary: {}", e),
-        })?;
-
-    Ok(MCPResult {
-        content: "Chapter summary updated successfully".to_string(),
-        metadata: None,
-    })
 }
 
-// Handle the initialize request
-async fn handle_initialize(params: &MCPParams) -> Result<MCPResult, MCPErrorResponse> {
-    // Log initialization details
-    let protocol_version = params.options.get("protocolVersion").and_then(|v| v.as_str());
-    if let Some(version) = protocol_version {
-        tracing::info!("Initializing MCP server with protocol version: {}", version);
-    } else {
-        tracing::warn!("Initialize request missing protocolVersion field");
+// Formatting functions to optimize responses for small context windows
+fn format_novels(novels: &[serde_json::Value]) -> Value {
+    if novels.is_empty() {
+        return json!("No novels found matching your query.");
     }
+    
+    let formatted = novels.iter().enumerate().map(|(i, novel)| {
+        let title = novel["title"].as_str().unwrap_or("Unknown title");
+        let author = novel["author"].as_str().unwrap_or("Unknown author");
+        let summary = novel["summary"].as_str().unwrap_or("No summary available");
+        let id = novel["_id"].as_str().unwrap_or("");
         
-    // Handle capabilities registration if provided
-    if let Some(capabilities) = params.options.get("capabilities") {
-        tracing::debug!("Client capabilities: {}", capabilities);
-    }
-
-    // Return successful initialization response
-    Ok(MCPResult {
-        content: "{\"message\": \"MCP server initialized\"}".to_string(),
-        metadata: None,
-    })
+        // Create a compact summary
+        format!("{}. {} (by {}) - ID: {}\n   Summary: {}", 
+                i+1, title, author, id, 
+                truncate_text(summary, 150))
+    }).collect::<Vec<String>>().join("\n\n");
+    
+    json!(formatted)
 }
 
-// Helper function to validate authentication tokens
-fn validate_auth_token(options: &HashMap<String, serde_json::Value>) -> bool {
-    if let Some(token) = options.get("auth_token").and_then(|v| v.as_str()) {
-        // Replace with actual token validation logic
-        token == "trusted_llm_token"
+fn format_chapters(chapters: &[serde_json::Value]) -> Value {
+    if chapters.is_empty() {
+        return json!("No chapters found matching your query.");
+    }
+    
+    let formatted = chapters.iter().enumerate().map(|(i, chapter)| {
+        let title = chapter["title"].as_str().unwrap_or("Untitled");
+        let novel_id = chapter["novel_id"].as_str().unwrap_or("Unknown novel");
+        let id = chapter["_id"].as_str().unwrap_or("");
+        let chapter_number = chapter["chapter_number"].as_u64().unwrap_or(0);
+        
+        format!("{}. Chapter {} - {} (ID: {})\n   Novel ID: {}", 
+                i+1, chapter_number, title, id, novel_id)
+    }).collect::<Vec<String>>().join("\n\n");
+    
+    json!(formatted)
+}
+
+fn format_characters(characters: &[serde_json::Value]) -> Value {
+    if characters.is_empty() {
+        return json!("No characters found matching your query.");
+    }
+    
+    let formatted = characters.iter().enumerate().map(|(i, character)| {
+        let name = character["name"].as_str().unwrap_or("Unknown");
+        let novel_title = character["novel_title"].as_str().unwrap_or("Unknown novel");
+        let id = character["_id"].as_str().unwrap_or("");
+        let role = character["role"].as_str().unwrap_or("Unknown role");
+        
+        format!("{}. {} - {} in '{}' (ID: {})", 
+                i+1, name, role, novel_title, id)
+    }).collect::<Vec<String>>().join("\n\n");
+    
+    json!(formatted)
+}
+
+fn format_character_details(character: &serde_json::Value) -> Value {
+    if character.is_null() {
+        return json!("Character not found.");
+    }
+    
+    let name = character["name"].as_str().unwrap_or("Unknown");
+    let novel_title = character["novel_title"].as_str().unwrap_or("Unknown novel");
+    let description = character["description"].as_str().unwrap_or("No description available");
+    let role = character["role"].as_str().unwrap_or("Unknown role");
+    let relationships = if let Some(rels) = character["relationships"].as_array() {
+        rels.iter()
+            .map(|rel| {
+                let related_name = rel["name"].as_str().unwrap_or("Unknown");
+                let relation_type = rel["relation_type"].as_str().unwrap_or("connected to");
+                format!("- {} is {} {}", name, relation_type, related_name)
+            })
+            .collect::<Vec<String>>()
+            .join("\n")
     } else {
-        false
-    }
+        "No relationship information available".to_string()
+    };
+    
+    let formatted = format!(
+        "CHARACTER: {}\nROLE: {}\nNOVEL: {}\n\nDESCRIPTION:\n{}\n\nRELATIONSHIPS:\n{}",
+        name, role, novel_title, description, relationships
+    );
+    
+    json!(formatted)
 }
 
-// Format the database result into a more LLM-friendly text format
-fn format_content_for_llm(data: &serde_json::Value, params: &SearchParams) -> String {
-    if let serde_json::Value::Array(items) = data {
-        if items.is_empty() {
-            return format!("No results found for your query about {}.", params.collection);
-        }
+fn format_qa(qa_entries: &[serde_json::Value]) -> Value {
+    if qa_entries.is_empty() {
+        return json!("No Q&A entries found matching your query.");
+    }
+    
+    let formatted = qa_entries.iter().enumerate().map(|(i, qa)| {
+        let question = qa["question"].as_str().unwrap_or("Unknown question");
+        let answer = qa["answer"].as_str().unwrap_or("No answer available");
+        let source = qa["source"].as_str().unwrap_or("Unknown source");
+        
+        format!("Q{}. {}\nA: {}\nSource: {}", 
+                i+1, question, answer, source)
+    }).collect::<Vec<String>>().join("\n\n");
+    
+    json!(formatted)
+}
 
-        // Format different types differently
-        match params.collection.as_str() {
-            "novels" => format_novels(items),
-            "chapters" => format_chapters(items),
-            "characters" => format_characters(items),
-            "qa" => format_qa(items),
-            _ => format!("Results for {}: {}", params.collection, serde_json::to_string_pretty(data).unwrap_or_default()),
-        }
+fn format_chapter_content(chapter: &serde_json::Value) -> Value {
+    if chapter.is_null() {
+        return json!("Chapter not found.");
+    }
+    
+    let title = chapter["title"].as_str().unwrap_or("Untitled");
+    let novel_title = chapter["novel_title"].as_str().unwrap_or("Unknown novel");
+    let content = chapter["content"].as_str().unwrap_or("No content available");
+    let chapter_number = chapter["chapter_number"].as_u64().unwrap_or(0);
+    
+    let content_summary = if content.len() > 2000 {
+        format!("{}\n\n[Content truncated due to length. {} characters total]", 
+                &content[0..2000], content.len())
     } else {
-        format!("Results: {}", serde_json::to_string_pretty(data).unwrap_or_default())
-    }
+        content.to_string()
+    };
+    
+    let formatted = format!(
+        "NOVEL: {}\nCHAPTER {}: {}\n\nCONTENT:\n{}",
+        novel_title, chapter_number, title, content_summary
+    );
+    
+    json!(formatted)
 }
 
-// Helper functions to format different entity types in an LLM-friendly way
-fn format_novels(items: &[serde_json::Value]) -> String {
-    let mut result = format!("Found {} novels:\n\n", items.len());
+fn format_all_results(results: &serde_json::Value) -> Value {
+    let mut sections = Vec::new();
     
-    for (i, novel) in items.iter().enumerate() {
-        if let Some(title) = novel.get("title").and_then(|t| t.as_str()) {
-            let author = novel.get("author").and_then(|a| a.as_str()).unwrap_or("Unknown");
-            let summary = novel.get("summary").and_then(|s| s.as_str()).unwrap_or("No summary available");
-            
-            result.push_str(&format!("{}. \"{}\" by {}\n", i + 1, title, author));
-            result.push_str(&format!("   Summary: {}\n\n", summary));
+    if let Some(novels) = results["novels"].as_array() {
+        if !novels.is_empty() {
+            let formatted_novels = format!("NOVELS (top {} results):\n{}", 
+                novels.len().min(3),
+                novels.iter().take(3).enumerate().map(|(i, novel)| {
+                    let title = novel["title"].as_str().unwrap_or("Unknown title");
+                    let author = novel["author"].as_str().unwrap_or("Unknown author");
+                    format!("{}. {} by {}", i+1, title, author)
+                }).collect::<Vec<String>>().join("\n")
+            );
+            sections.push(formatted_novels);
         }
     }
     
-    result
+    if let Some(characters) = results["characters"].as_array() {
+        if !characters.is_empty() {
+            let formatted_chars = format!("CHARACTERS (top {} results):\n{}", 
+                characters.len().min(3),
+                characters.iter().take(3).enumerate().map(|(i, char)| {
+                    let name = char["name"].as_str().unwrap_or("Unknown");
+                    let novel = char["novel_title"].as_str().unwrap_or("Unknown novel");
+                    format!("{}. {} from {}", i+1, name, novel)
+                }).collect::<Vec<String>>().join("\n")
+            );
+            sections.push(formatted_chars);
+        }
+    }
+    
+    if let Some(chapters) = results["chapters"].as_array() {
+        if !chapters.is_empty() {
+            let formatted_chapters = format!("CHAPTERS (top {} results):\n{}", 
+                chapters.len().min(3),
+                chapters.iter().take(3).enumerate().map(|(i, chapter)| {
+                    let title = chapter["title"].as_str().unwrap_or("Untitled");
+                    let novel = chapter["novel_title"].as_str().unwrap_or("Unknown novel");
+                    format!("{}. {} from {}", i+1, title, novel)
+                }).collect::<Vec<String>>().join("\n")
+            );
+            sections.push(formatted_chapters);
+        }
+    }
+    
+    if let Some(qa) = results["qa"].as_array() {
+        if !qa.is_empty() {
+            let formatted_qa = format!("Q&A (top {} results):\n{}", 
+                qa.len().min(3),
+                qa.iter().take(3).enumerate().map(|(i, q)| {
+                    let question = q["question"].as_str().unwrap_or("Unknown question");
+                    format!("{}. {}", i+1, truncate_text(question, 100))
+                }).collect::<Vec<String>>().join("\n")
+            );
+            sections.push(formatted_qa);
+        }
+    }
+    
+    if sections.is_empty() {
+        return json!("No results found matching your query.");
+    }
+    
+    let total_count = results["novels"].as_array().map_or(0, |v| v.len()) +
+                     results["characters"].as_array().map_or(0, |v| v.len()) +
+                     results["chapters"].as_array().map_or(0, |v| v.len()) +
+                     results["qa"].as_array().map_or(0, |v| v.len());
+    
+    let summary = format!(
+        "Found {} results matching your query. Here's a summary:\n\n{}",
+        total_count,
+        sections.join("\n\n")
+    );
+    
+    json!(summary)
 }
 
-fn format_chapters(items: &[serde_json::Value]) -> String {
-    let mut result = format!("Found {} chapters:\n\n", items.len());
-    
-    for chapter in items.iter() {
-        if let Some(title) = chapter.get("title").and_then(|t| t.as_str()) {
-            let number = chapter.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-            let summary = chapter.get("summary").and_then(|s| s.as_str()).unwrap_or("No summary available");
-            
-            result.push_str(&format!("Chapter {}: {}\n", number, title));
-            result.push_str(&format!("   Summary: {}\n\n", summary));
-            
-            // Add key points if available
-            if let Some(key_points) = chapter.get("key_points").and_then(|k| k.as_array()) {
-                if !key_points.is_empty() {
-                    result.push_str("   Key points:\n");
-                    for point in key_points {
-                        if let Some(point_str) = point.as_str() {
-                            result.push_str(&format!("   - {}\n", point_str));
+// Helper function to truncate text with ellipsis
+fn truncate_text(text: &str, max_length: usize) -> String {
+    if text.len() <= max_length {
+        text.to_string()
+    } else {
+        format!("{}...", &text[0..max_length])
+    }
+}
+
+impl<T: DatabaseService + Clone + Send + Sync + 'static> ServerHandler for MpcHandler<T> {
+    /// Provide information about server capabilities
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            protocol_version: ProtocolVersion::V_2024_11_05,
+            capabilities: ServerCapabilities::builder()
+                .enable_prompts()
+                .enable_tools()
+                .build(),
+            server_info: Implementation {
+                name: "mcp_database".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            instructions: Some("MongoDB MCP Server providing access to data with optimizations for small context windows (3k tokens).".into()),
+        }
+    }
+
+    /// List available prompts for this server
+    async fn list_prompts(
+        &self,
+        _request: rmcp::model::PaginatedRequestParam,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, RmcpError> {
+        // Define example prompts for this database service
+        let prompts = vec![
+            Prompt {
+                name: "search_novel".to_string(),
+                description: Some("Search for novels matching specific criteria".to_string()),
+                arguments: None,
+            },
+            Prompt {
+                name: "character_details".to_string(),
+                description: Some("Get detailed information about a character".to_string()),
+                arguments: None,
+            },
+            Prompt {
+                name: "chapter_summary".to_string(), 
+                description: Some("Get a summary of a specific chapter".to_string()),
+                arguments: None,
+            },
+        ];
+
+        Ok(ListPromptsResult {
+            prompts,
+            next_cursor: None,
+        })
+    }
+
+    /// Get a specific prompt by name
+    async fn get_prompt(
+        &self,
+        request: rmcp::model::GetPromptRequestParam,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResult, RmcpError> {
+        // Return a specific prompt based on name
+        match request.name.as_str() {
+            "search_novel" => {
+                Ok(rmcp::model::GetPromptResult {
+                    description: Some("Search for novels matching specific criteria".to_string()),
+                    messages: vec![
+                        PromptMessage {
+                            role: PromptMessageRole::User,
+                            content: create_content("Find novels about magic and dragons"),
                         }
-                    }
-                    result.push('\n');
-                }
-            }
-        }
-    }
-    
-    result
-}
-
-fn format_characters(items: &[serde_json::Value]) -> String {
-    let mut result = format!("Found {} characters:\n\n", items.len());
-    
-    for (i, character) in items.iter().enumerate() {
-        if let Some(name) = character.get("name").and_then(|n| n.as_str()) {
-            let role = character.get("role").and_then(|r| r.as_str()).unwrap_or("Unknown role");
-            let description = character.get("description").and_then(|d| d.as_str()).unwrap_or("No description available");
-            
-            result.push_str(&format!("{}. {} ({})\n", i + 1, name, role));
-            result.push_str(&format!("   Description: {}\n", description));
-            
-            // Add key traits if available
-            if let Some(traits) = character.get("key_traits").and_then(|t| t.as_array()) {
-                if !traits.is_empty() {
-                    result.push_str("   Key traits: ");
-                    let traits_str: Vec<String> = traits
-                        .iter()
-                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
-                        .collect();
-                    result.push_str(&traits_str.join(", "));
-                    result.push('\n');
-                }
-            }
-            
-            // Add relationships if available
-            if let Some(relationships) = character.get("relationships").and_then(|r| r.as_array()) {
-                if !relationships.is_empty() {
-                    result.push_str("   Relationships:\n");
-                    for rel in relationships {
-                        if let (Some(rel_name), Some(rel_type)) = (
-                            rel.get("character_name").and_then(|n| n.as_str()),
-                            rel.get("relationship_type").and_then(|t| t.as_str()),
-                        ) {
-                            result.push_str(&format!("   - {} ({})\n", rel_name, rel_type));
+                    ],
+                })
+            },
+            "character_details" => {
+                Ok(rmcp::model::GetPromptResult {
+                    description: Some("Get detailed information about a character".to_string()),
+                    messages: vec![
+                        PromptMessage {
+                            role: PromptMessageRole::User,
+                            content: create_content("Tell me about the protagonist of the novel \"Dragon's Journey\""),
                         }
-                    }
-                }
+                    ],
+                })
+            },
+            "chapter_summary" => {
+                Ok(rmcp::model::GetPromptResult {
+                    description: Some("Get a summary of a specific chapter".to_string()),
+                    messages: vec![
+                        PromptMessage {
+                            role: PromptMessageRole::User,
+                            content: create_content("Summarize chapter 5 of \"The Lost Kingdom\""),
+                        }
+                    ],
+                })
+            },
+            _ => {
+                Err(RmcpError::invalid_params("Unknown method", None))
             }
+        }
+    }
+
+    /// List available tools for this server
+    async fn list_tools(
+        &self, 
+        _request: rmcp::model::PaginatedRequestParam,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, RmcpError> {
+        use rmcp::model::{Tool, ListToolsResult};
+        use std::borrow::Cow;
+        
+        let tool_schema = std::sync::Arc::new(serde_json::to_value({
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".to_string(), serde_json::Value::String("object".to_string()));
             
-            result.push('\n');
-        }
-    }
-    
-    result
-}
+            let mut properties = serde_json::Map::new();
+            
+            let mut query_prop = serde_json::Map::new();
+            query_prop.insert("type".to_string(), serde_json::Value::String("string".to_string()));
+            query_prop.insert("description".to_string(), serde_json::Value::String("Natural language query to search the database".to_string()));
+            
+            let mut collection_prop = serde_json::Map::new();
+            collection_prop.insert("type".to_string(), serde_json::Value::String("string".to_string()));
+            collection_prop.insert("description".to_string(), serde_json::Value::String("Type of data to query: novels, chapters, characters, or qa".to_string()));
+            
+            let mut enum_values = serde_json::Value::Array(vec![]);
+            if let serde_json::Value::Array(ref mut arr) = enum_values {
+                arr.push(serde_json::Value::String("novels".to_string()));
+                arr.push(serde_json::Value::String("chapters".to_string()));
+                arr.push(serde_json::Value::String("characters".to_string()));
+                arr.push(serde_json::Value::String("qa".to_string()));
+            }
+            collection_prop.insert("enum".to_string(), enum_values);
+            
+            properties.insert("query".to_string(), serde_json::Value::Object(query_prop));
+            properties.insert("collection".to_string(), serde_json::Value::Object(collection_prop));
+            
+            schema.insert("properties".to_string(), serde_json::Value::Object(properties));
+            
+            let required = serde_json::Value::Array(vec![serde_json::Value::String("query".to_string())]);
+            schema.insert("required".to_string(), required);
+            
+            schema
+        }).unwrap_or_default().as_object().unwrap().clone());
 
-fn format_qa(items: &[serde_json::Value]) -> String {
-    let mut result = format!("Found {} Q&A entries:\n\n", items.len());
-    
-    for (i, qa) in items.iter().enumerate() {
-        if let (Some(question), Some(answer)) = (
-            qa.get("question").and_then(|q| q.as_str()),
-            qa.get("answer").and_then(|a| a.as_str()),
-        ) {
-            result.push_str(&format!("Q{}: {}\n", i + 1, question));
-            result.push_str(&format!("A: {}\n\n", answer));
-        }
-    }
-    
-    result
-}
-
-// Custom error type for MCP errors
-pub struct MCPErrorResponse {
-    pub code: i32,
-    pub message: String,
-}
-
-impl IntoResponse for MCPErrorResponse {
-    fn into_response(self) -> Response {
-        let status = match self.code {
-            -32700 => StatusCode::BAD_REQUEST, // Parse error
-            -32600 => StatusCode::BAD_REQUEST, // Invalid Request
-            -32601 => StatusCode::NOT_FOUND,   // Method not found
-            -32602 => StatusCode::BAD_REQUEST, // Invalid params
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        // Define the database query tool
+        let query_tool = Tool {
+            name: Cow::from("query_database"),
+            description: Cow::from("Query the database using natural language"),
+            input_schema: tool_schema,
         };
         
-        let mcp_error = MCPError {
-            code: self.code,
-            message: self.message,
-            data: None,
+        // Create chapter tool schema
+        let chapter_schema = std::sync::Arc::new(serde_json::to_value({
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".to_string(), serde_json::Value::String("object".to_string()));
+            
+            let mut properties = serde_json::Map::new();
+            let mut chapter_id_prop = serde_json::Map::new();
+            chapter_id_prop.insert("type".to_string(), serde_json::Value::String("string".to_string()));
+            chapter_id_prop.insert("description".to_string(), serde_json::Value::String("ID of the chapter to retrieve".to_string()));
+            properties.insert("chapter_id".to_string(), serde_json::Value::Object(chapter_id_prop));
+            
+            schema.insert("properties".to_string(), serde_json::Value::Object(properties));
+            let required = serde_json::Value::Array(vec![serde_json::Value::String("chapter_id".to_string())]);
+            schema.insert("required".to_string(), required);
+            
+            schema
+        }).unwrap_or_default().as_object().unwrap().clone());
+        
+        // Define the chapter content tool
+        let chapter_tool = Tool {
+            name: Cow::from("get_chapter_content"),
+            description: Cow::from("Retrieve the content of a specific chapter"),
+            input_schema: chapter_schema,
         };
         
-        let body = Json(MCPResponse {
-            jsonrpc: "2.0".to_string(),
-            id: None,
-            result: None,
-            error: Some(mcp_error),
-        });
+        // Define the character details tool with proper schema format
+        let character_schema = std::sync::Arc::new(serde_json::to_value({
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".to_string(), serde_json::Value::String("object".to_string()));
+            
+            let mut properties = serde_json::Map::new();
+            let mut character_id_prop = serde_json::Map::new();
+            character_id_prop.insert("type".to_string(), serde_json::Value::String("string".to_string()));
+            character_id_prop.insert("description".to_string(), serde_json::Value::String("ID of the character to retrieve".to_string()));
+            properties.insert("character_id".to_string(), serde_json::Value::Object(character_id_prop));
+            
+            schema.insert("properties".to_string(), serde_json::Value::Object(properties));
+            let required = serde_json::Value::Array(vec![serde_json::Value::String("character_id".to_string())]);
+            schema.insert("required".to_string(), required);
+            
+            schema
+        }).unwrap_or_default().as_object().unwrap().clone());
         
-        (status, body).into_response()
+        let character_tool = Tool {
+            name: Cow::from("get_character_details"),
+            description: Cow::from("Retrieve detailed information about a character"),
+            input_schema: character_schema,
+        };
+        
+        // Create regex QA tool schema
+        let regex_qa_schema = std::sync::Arc::new(serde_json::to_value({
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".to_string(), serde_json::Value::String("object".to_string()));
+            
+            let mut properties = serde_json::Map::new();
+            let mut regex_prop = serde_json::Map::new();
+            regex_prop.insert("type".to_string(), serde_json::Value::String("string".to_string()));
+            regex_prop.insert("description".to_string(), serde_json::Value::String("Regular expression to match in Q&A entries".to_string()));
+            properties.insert("regex_pattern".to_string(), serde_json::Value::Object(regex_prop));
+            
+            schema.insert("properties".to_string(), serde_json::Value::Object(properties));
+            let required = serde_json::Value::Array(vec![serde_json::Value::String("regex_pattern".to_string())]);
+            schema.insert("required".to_string(), required);
+            
+            schema
+        }).unwrap_or_default().as_object().unwrap().clone());
+        
+        let regex_qa_tool = Tool {
+            name: Cow::from("query_qa_regex"),
+            description: Cow::from("Search Q&A entries using a regex pattern"),
+            input_schema: regex_qa_schema,
+        };
+        
+        // Create chapter regex tool schema
+        let regex_chapter_schema = std::sync::Arc::new(serde_json::to_value({
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".to_string(), serde_json::Value::String("object".to_string()));
+            
+            let mut properties = serde_json::Map::new();
+            let mut regex_prop = serde_json::Map::new();
+            regex_prop.insert("type".to_string(), serde_json::Value::String("string".to_string()));
+            regex_prop.insert("description".to_string(), serde_json::Value::String("Regular expression to match in chapter titles or content".to_string()));
+            properties.insert("regex_pattern".to_string(), serde_json::Value::Object(regex_prop));
+            
+            schema.insert("properties".to_string(), serde_json::Value::Object(properties));
+            let required = serde_json::Value::Array(vec![serde_json::Value::String("regex_pattern".to_string())]);
+            schema.insert("required".to_string(), required);
+            
+            schema
+        }).unwrap_or_default().as_object().unwrap().clone());
+        
+        let regex_chapter_tool = Tool {
+            name: Cow::from("query_chapter_regex"),
+            description: Cow::from("Search chapters using a regex pattern"),
+            input_schema: regex_chapter_schema,
+        };
+        
+        // Create character regex tool schema
+        let regex_character_schema = std::sync::Arc::new(serde_json::to_value({
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".to_string(), serde_json::Value::String("object".to_string()));
+            
+            let mut properties = serde_json::Map::new();
+            let mut regex_prop = serde_json::Map::new();
+            regex_prop.insert("type".to_string(), serde_json::Value::String("string".to_string()));
+            regex_prop.insert("description".to_string(), serde_json::Value::String("Regular expression to match in character names or descriptions".to_string()));
+            properties.insert("regex_pattern".to_string(), serde_json::Value::Object(regex_prop));
+            
+            schema.insert("properties".to_string(), serde_json::Value::Object(properties));
+            let required = serde_json::Value::Array(vec![serde_json::Value::String("regex_pattern".to_string())]);
+            schema.insert("required".to_string(), required);
+            
+            schema
+        }).unwrap_or_default().as_object().unwrap().clone());
+        
+        let regex_character_tool = Tool {
+            name: Cow::from("query_character_regex"),
+            description: Cow::from("Search characters using a regex pattern"),
+            input_schema: regex_character_schema,
+        };
+        
+        // Create the list of tools
+        let tools = vec![
+            query_tool,
+            chapter_tool,
+            character_tool,
+            regex_qa_tool,
+            regex_chapter_tool,
+            regex_character_tool,
+        ];
+        
+        Ok(ListToolsResult {
+            tools,
+            next_cursor: None,
+        })
     }
-}
 
-// Implement From<anyhow::Error> for MCPErrorResponse to enable the ? operator
-impl From<anyhow::Error> for MCPErrorResponse {
-    fn from(error: anyhow::Error) -> Self {
-        MCPErrorResponse {
-            code: -32603, // Internal error
-            message: format!("Internal error: {}", error),
+    /// Execute a specific tool
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParam,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, RmcpError> {
+        let tool_name = request.name.as_ref();
+        let args = request.arguments.unwrap_or_default();
+        
+        // Dispatch to the appropriate handler based on tool name
+        match tool_name {
+            "query_database" => {
+                let query = args.get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RmcpError::invalid_params("Missing 'query' parameter", None))?;
+                
+                let collection = args.get("collection")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("all");
+                
+                // Parse the natural language query into search parameters
+                let search_params = QueryParser::parse_natural_language_query(query);
+                
+                // Search the database with the parsed parameters
+                let result = match collection {
+                    "novels" => self.db_service.search_novels(&search_params).await,
+                    "chapters" => self.db_service.search_chapters(&search_params).await,
+                    "characters" => self.db_service.search_characters(&search_params).await,
+                    "qa" => self.db_service.search_qa(&search_params).await,
+                    _ => {
+                        let result = self.db_service.search_all(&search_params).await
+                            .map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
+                        
+                        // Convert from Value to MCPResponse
+                        let content = format_all_results(&result);
+                        return Ok(CallToolResult {
+                            content: vec![Content::from_raw(content.to_string())],
+                            is_error: Some(false),
+                        });
+                    },
+                }.map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
+                
+                // Format the result in a token-efficient manner
+                let content_str = match collection {
+                    "novels" => format_novels(result.data.as_array().unwrap()),
+                    "chapters" => format_chapters(result.data.as_array().unwrap()),
+                    "characters" => format_characters(result.data.as_array().unwrap()),
+                    "qa" => format_qa(result.data.as_array().unwrap()),
+                    _ => format_all_results(&result.data),
+                };
+                
+                Ok(CallToolResult {
+                    content: vec![Content::from_raw(content_str.to_string())],
+                    is_error: Some(false),
+                })
+            },
+            "get_chapter_content" => {
+                let chapter_id = args.get("chapter_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RmcpError::invalid_params("Missing 'chapter_id' parameter", None))?;
+                
+                // Get chapter content from database
+                let result = self.db_service.get_chapter_content(chapter_id).await
+                    .map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
+                
+                Ok(CallToolResult {
+                    content: vec![Content::from_raw(result.unwrap())],
+                    is_error: Some(false),
+                })
+            },
+            "get_character_details" => {
+                let character_id = args.get("character_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RmcpError::invalid_params("Missing 'character_id' parameter", None))?;
+                
+                // Get character details from database
+                let result = self.db_service.get_character_details(character_id).await
+                    .map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
+                
+                // Format the character details
+                if let Some(character) = result {
+                    let character_json = serde_json::to_value(&character)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    
+                    let formatted = format_character_details(&character_json);
+                    
+                    Ok(CallToolResult {
+                        content: vec![Content::from_raw(formatted.to_string())],
+                        is_error: Some(false),
+                    })
+                } else {
+                    Ok(CallToolResult {
+                        content: vec![Content::from_raw(format!("No character found with ID: {}", character_id))],
+                        is_error: Some(false),
+                    })
+                }
+            },
+            "query_qa_regex" => {
+                let regex_pattern = args.get("regex_pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RmcpError::invalid_params("Missing 'regex_pattern' parameter", None))?;
+                
+                // Search Q&A entries with regex
+                let result = self.db_service.search_qa_by_regex(regex_pattern).await
+                    .map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
+                
+                // Format the results
+                let formatted = format_qa(&result);
+                
+                Ok(CallToolResult {
+                    content: vec![Content::from_raw(formatted.to_string())],
+                    is_error: Some(false),
+                })
+            },
+            "query_chapter_regex" => {
+                let regex_pattern = args.get("regex_pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RmcpError::invalid_params("Missing 'regex_pattern' parameter", None))?;
+                
+                // Search chapters with regex
+                let result = self.db_service.search_chapters_by_regex(regex_pattern).await
+                    .map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
+                
+                // Format the results
+                let formatted = format_chapters(&result);
+                
+                Ok(CallToolResult {
+                    content: vec![Content::from_raw(formatted.to_string())],
+                    is_error: Some(false),
+                })
+            },
+            "query_character_regex" => {
+                let regex_pattern = args.get("regex_pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RmcpError::invalid_params("Missing 'regex_pattern' parameter", None))?;
+                
+                // Search characters with regex
+                let result = self.db_service.search_characters_by_regex(regex_pattern).await
+                    .map_err(|e| RmcpError::internal_error(format!("Database error: {}", e), None))?;
+                
+                // Format the results
+                let formatted = format_characters(&result);
+                
+                Ok(CallToolResult {
+                    content: vec![Content::from_raw(formatted.to_string())],
+                    is_error: Some(false),
+                })
+            },
+            _ => {
+                Err(RmcpError::invalid_params("Unknown method", None))
+            }
         }
     }
 }
+
+pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = IntervalStream::new(tokio::time::interval(Duration::from_secs(1)))
+        .enumerate()
+        .map(|(i, _)| Ok(Event::default().data(format!("tick: {}", i))));
+    Sse::new(stream)
+}
+
+// // Add this function to create a filter that adds server state to the request
+// fn with_server_state<T: DatabaseService + Clone + Send + Sync + 'static>(
+//     state: ServerState<T>
+// ) -> impl Filter<Extract = (ServerState<T>,), Error = std::convert::Infallible> + Clone {
+//     warp::any().map(move || state.clone())
+// }
+
+// async fn handle_mcp_request<T: DatabaseService + Clone + Send + Sync + 'static>(
+//     request: serde_json::Value, 
+//     state: ServerState<T>
+// ) -> Result<impl warp::Reply, warp::Rejection> {
+//     let mpc_handler = MpcHandler {
+//         db_service: state.db_service
+//     };
+    
+//     // Process the request manually since HttpService isn't available
+//     let response = match mpc_handler.handle_request(request).await {
+//         Ok(resp) => resp,
+//         Err(err) => json!({
+//             "error": {
+//                 "code": -32603,
+//                 "message": format!("Internal error: {}", err)
+//             }
+//         }),
+//     };
+    
+//     Ok(warp::reply::json(&response))
+// }
+
+// // Fix StdIO handler to manually implement the service since StdioService isn't available
+// pub async fn run_stdio_mcp_server<T: DatabaseService + Clone + Send + Sync + 'static>(
+//     state: ServerState<T>
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     let mpc_handler = MpcHandler {
+//         db_service: state.db_service.clone(),
+//     };
+    
+//     // Manual implementation of StdIO service
+//     let stdin = std::io::stdin();
+//     let mut stdin_lock = stdin.lock();
+//     let stdout = std::io::stdout();
+//     let mut stdout_lock = stdout.lock();
+    
+//     let mut buffer = String::new();
+    
+//     loop {
+//         buffer.clear();
+//         match stdin_lock.read_line(&mut buffer) {
+//             Ok(0) => break, // EOF
+//             Ok(_) => {
+//                 let request: serde_json::Value = match serde_json::from_str(&buffer) {
+//                     Ok(req) => req,
+//                     Err(e) => {
+//                         let error_response = json!({
+//                             "error": {
+//                                 "code": -32700,
+//                                 "message": format!("Parse error: {}", e)
+//                             }
+//                         });
+//                         serde_json::to_writer(&mut stdout_lock, &error_response)?;
+//                         writeln!(&mut stdout_lock)?;
+//                         continue;
+//                     }
+//                 };
+                
+//                 // Process the request
+//                 let response = match mpc_handler.handle_request(request).await {
+//                     Ok(resp) => resp,
+//                     Err(e) => {
+//                         json!({
+//                             "error": {
+//                                 "code": -32603,
+//                                 "message": format!("Internal error: {}", e)
+//                             }
+//                         })
+//                     }
+//                 };
+                
+//                 // Write the response
+//                 serde_json::to_writer(&mut stdout_lock, &response)?;
+//                 writeln!(&mut stdout_lock)?;
+//             }
+//             Err(e) => {
+//                 eprintln!("Error reading from stdin: {}", e);
+//                 break;
+//             }
+//         }
+//     }
+    
+//     Ok(())
+// }

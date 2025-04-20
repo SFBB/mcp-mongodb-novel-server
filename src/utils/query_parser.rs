@@ -1,6 +1,7 @@
 use crate::models::{SearchFilters, SearchParams};
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
+use serde_json::Value;
 
 pub struct QueryParser;
 
@@ -150,5 +151,63 @@ impl QueryParser {
         limit_regex
             .captures(query)
             .and_then(|caps| caps[1].parse::<u32>().ok())
+    }
+
+    // Parse a query string into key-value parameters
+    pub fn parse_query(query: &str) -> HashMap<String, String> {
+        let mut params = HashMap::new();
+        
+        // Handle explicit key=value pairs
+        let kv_regex = Regex::new(r"(\w+)\s*[=:]\s*([^&\s]+)").unwrap();
+        for cap in kv_regex.captures_iter(query) {
+            let key = cap[1].to_lowercase();
+            let value = cap[2].trim().to_string();
+            params.insert(key, value);
+        }
+        
+        // Extract specific information if not already captured
+        if !params.contains_key("type") {
+            if let Some(collection) = Self::extract_collection(query) {
+                params.insert("type".to_string(), collection);
+            }
+        }
+        
+        // Add the query itself as a parameter if not explicitly provided
+        if !params.contains_key("q") && !params.contains_key("query") {
+            params.insert("q".to_string(), query.to_string());
+        }
+        
+        params
+    }
+}
+
+// Make the parse_query function public for external use
+pub fn parse_query(query: &str) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+    
+    // Split the query by spaces to identify key-value pairs
+    for part in query.split_whitespace() {
+        if part.contains(':') {
+            let kv: Vec<&str> = part.splitn(2, ':').collect();
+            if kv.len() == 2 {
+                params.insert(kv[0].to_string(), kv[1].to_string());
+            }
+        }
+    }
+    
+    // If there are no key-value pairs, treat the whole query as a 'text' search
+    if params.is_empty() && !query.trim().is_empty() {
+        params.insert("text".to_string(), query.trim().to_string());
+    }
+    
+    params
+}
+
+// Ensure truncate_text is public as well
+pub fn truncate_text(text: &str, max_length: usize) -> String {
+    if text.len() <= max_length {
+        text.to_string()
+    } else {
+        format!("{}...", &text[0..max_length])
     }
 }

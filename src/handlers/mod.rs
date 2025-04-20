@@ -1,5 +1,6 @@
 mod crud_handler;
-mod mcp_handler;
+// Make module public so it can be accessed from main.rs
+pub mod mcp_handler;
 mod rmcp_handler;
 
 pub use crud_handler::*;
